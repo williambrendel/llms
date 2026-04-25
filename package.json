@@ -1,0 +1,41 @@
+{
+  "name": "ask-nereus-server",
+  "version": "1.0.0",
+  "description": "LLM lib",
+  "scripts": {
+    "clear-all": "rm -rf node_modules/ && npm cache clean --force",
+    "docs": "npx documentation build src/**/*.js -f html -o docs",
+    "docs:watch": "npx documentation build src/**/*.js -f html -o docs --watch",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "lintdiff": "git diff --name-only --cached --relative | grep '\\.js$' | xargs standard | snazzy",
+    "verbose-test": "NODE_OPTIONS=--experimental-vm-modules jest --verbose --silent=false",
+    "test": "NODE_OPTIONS=--experimental-vm-modules jest --silent=false",
+    "update": "npx npm-check-updates -u; npm update; npm install"
+  },
+  "keywords": [
+    "claude",
+    "llm"
+  ],
+  "author": "William Brendel",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.0",
+    "@xenova/transformers": "^2.17.2",
+    "dictionary-en": "^4.0.0",
+    "dotenv": "^16.4.5",
+    "nspell": "^2.1.5"
+  },
+  "devDependencies": {
+    "@eslint/create-config": "latest",
+    "@eslint/js": "latest",
+    "@jest/globals": "latest",
+    "documentation": "^14.0.3",
+    "eslint": "latest",
+    "eslint-plugin-css": "latest",
+    "eslint-plugin-json": "latest",
+    "globals": "latest",
+    "jest": "latest",
+    "npm-check-updates": "latest"
+  }
+}
