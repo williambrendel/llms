@@ -113,18 +113,18 @@ const similarity = (v1, v2, options) => {
   if (!(Array.isArray(v1) && Array.isArray(v2))) return 0;
 
   options = options && Object.assign({
-    dim: 0,
+    dim: null,
     offset1: 0,
     offset2: 0,
     normalize: false
   }, options) || {
-    dim: 0,
+    dim: null,
     offset1: 0,
     offset2: 0,
     normalize: false
   };
 
-  options.dim || (options.dim = Math.min(v1.length, v2.length));
+  options.dim >= 0 && options.dim !== null || (options.dim = Math.min(v1.length, v2.length));
   if (!(options.dim > 0)) return 0;
 
   return similarityUnsafe(v1, v2, options);

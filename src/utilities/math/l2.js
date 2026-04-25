@@ -25,8 +25,10 @@
  * // => 3*3 + 4*4 = 25
  */
 const l2SquaredUnsafe = (v, dim = v.length, offset = 0) => {
+  if (!(dim > 0)) return 0;
+
   let d = 0, o = offset || 0, res = 0;
-  for (; d < dim; d += 4, o += 4) {
+  for (const e = dim - 4; d < e; d += 4, o += 4) {
     res += v[o] * v[o]
       + v[o + 1] * v[o + 1]
       + v[o + 2] * v[o + 2]
@@ -79,7 +81,11 @@ const l2SquaredUnsafe = (v, dim = v.length, offset = 0) => {
  * // => 0
  */
 const l2Squared = (v, dim, offset) => {
-  if (!(Array.isArray(v) && v.length && (dim || (dim = v.length)) > 0)) return 0;
+  if (!(
+    Array.isArray(v)
+      && v.length 
+      && (dim >= 0 && dim !== null || (dim = v.length))
+  )) return 0;
   offset = Math.max(offset || 0, 0);
   return l2SquaredUnsafe(v, dim, offset);
 }

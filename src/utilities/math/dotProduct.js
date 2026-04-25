@@ -42,10 +42,11 @@ const { l2SquaredUnsafe } = require("./l2");
 const dotProductUnsafe = (v1, v2, dim, offset1 = 0, offset2 = 0) => {
   // Fast path: return squared magnitude via l2SquaredUnsafe when both refs and offsets match.
   if (v1 === v2 && offset1 === offset2) return l2SquaredUnsafe(v1, dim, offset1);
+  if (!(dim > 0)) return 0;
 
   // Compute dot product by increment of 4 for faster computation.
-  let d = 0, o1 = offset1, o2 = offset2, res = 0;
-  for (; d < dim; d += 4, o1 += 4, o2 += 4) {
+  let d = 0, o1 = offset1 || 0, o2 = offset2 || 0, res = 0;
+  for (const e = dim - 4; d < e; d += 4, o1 += 4, o2 += 4) {
     res += v1[o1] * v2[o2]
       + v1[o1 + 1] * v2[o2 + 1]
       + v1[o1 + 2] * v2[o2 + 2]
@@ -53,7 +54,7 @@ const dotProductUnsafe = (v1, v2, dim, offset1 = 0, offset2 = 0) => {
   }
 
   // Remainder if dim is not a multiple of 4.
-  for (d > dim && (d -= 4, o1 -= 4, o2 -= 4); d !== dim; ++d, ++o1, ++o2) {
+  for (; d !== dim; ++d, ++o1, ++o2) {
     res += v1[o1] * v2[o2];
   }
 
@@ -125,8 +126,7 @@ const dotProduct = (v1, v2, dim, offset1, offset2) => {
   v2 || (v2 = v1);
   if (!(Array.isArray(v1) && Array.isArray(v2))) return 0;
 
-  dim || (dim = Math.min(v1.length, v2.length));
-  if (!(dim > 0)) return 0;
+  dim >= 0 && dim !== null || (dim = Math.min(v1.length, v2.length));
 
   offset1 = Math.max(offset1 || 0, 0);
   offset2 = Math.max(offset2 || 0, 0);

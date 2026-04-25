@@ -43,10 +43,11 @@
 const cosineUnsafe = (v1, v2, dim, offset1 = 0, offset2 = 0) => {
   // Fast path: identical reference and offset — cosine similarity is always 1.
   if (v1 === v2 && offset1 === offset2) return 1;
+  if (!(dim > 0)) return 0;
 
   // Compute cosine by increment of 4 for faster computation.
-  let d = 0, o1 = offset1, o2 = offset2, res = 0, n1 = 0, n2 = 0;
-  for (; d < dim; d += 4, o1 += 4, o2 += 4) {
+  let d = 0, o1 = offset1 || 0, o2 = offset2 || 0, res = 0, n1 = 0, n2 = 0;
+  for (const e = dim - 4; d < e; d += 4, o1 += 4, o2 += 4) {
     const v10 = v1[o1], v11 = v1[o1 + 1], v12 = v1[o1 + 2], v13 = v1[o1 + 3];
     const v20 = v2[o2], v21 = v2[o2 + 1], v22 = v2[o2 + 2], v23 = v2[o2 + 3];
     res += v10 * v20 + v11 * v21 + v12 * v22 + v13 * v23;
@@ -55,7 +56,7 @@ const cosineUnsafe = (v1, v2, dim, offset1 = 0, offset2 = 0) => {
   }
 
   // Remainder if dim is not a multiple of 4.
-  for (d > dim && (d -= 4, o1 -= 4, o2 -= 4); d !== dim; ++d, ++o1, ++o2) {
+  for (; d !== dim; ++d, ++o1, ++o2) {
     const v10 = v1[o1], v20 = v2[o2];
     res += v10 * v20;
     n1  += v10 * v10;
@@ -144,8 +145,7 @@ const cosine = (v1, v2, dim, offset1, offset2) => {
   v2 || (v2 = v1);
   if (!(Array.isArray(v1) && Array.isArray(v2))) return 0;
 
-  dim || (dim = Math.min(v1.length, v2.length));
-  if (!(dim > 0)) return 0;
+  dim >= 0 && dim !== null || (dim = Math.min(v1.length, v2.length));
 
   offset1 = Math.max(offset1 || 0, 0);
   offset2 = Math.max(offset2 || 0, 0);
