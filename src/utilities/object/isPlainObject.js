@@ -8,8 +8,10 @@
 /**
  * @function isPlainObject
  * @description Returns true if a value is a plain object — a non-null, non-array
- * value whose typeof is `"object"`. Excludes arrays, null, class instances with
- * custom prototypes, and all primitives.
+ * value whose typeof is `"object"`.
+ * Excludes arrays, null, and all primitives. Does not check the prototype
+ * chain — class instances such as Date, Map, Set, and RegExp are considered
+ * plain objects by this predicate. Use a stricter check if that distinction matters.
  *
  * Designed for use as a guard before object spread or recursive merge operations
  * where arrays and null would produce incorrect results if treated as objects.

@@ -1,9 +1,8 @@
 "use strict";
 
 const math = require("./math");
+const object = require("./object");
 const { correctQuery, createSpellingEngine } = require("./correctQuery");
-const printStatistics = require("./printStatistics");
-const formatObject = require("./object/formatObject");
 const getMediaType = require("./getMediaType");
 
 /**
@@ -14,11 +13,11 @@ module.exports = Object.freeze({
   // Math utilities.
   ...math,
 
+  // Object utilities.
+  ...object,
+
   // Spell checking utilities.
   correctQuery,
-  
   createSpellingEngine,
-  formatObject,
   getMediaType,
-  printStatistics
 });

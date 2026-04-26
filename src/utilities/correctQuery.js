@@ -3,26 +3,26 @@
 const nspell = require("nspell");
 
 /**
- * @fileoverview
+ * @file correctQuery.js
+ * @brief
  * Spell-correction utility for user query strings.
  * Splits input into word and non-word tokens, corrects only word tokens
  * using a Hunspell-based engine, and reassembles the original structure
  * including punctuation, numbers, and whitespace.
- *
- * @module correctQuery
  */
 
 /**
+ * @constant {RegExp} SPACE_RE
  * @ignore
  * Matches one or more whitespace characters.
  * Used to normalize consecutive whitespace inside tokens to a single space.
  * The `g` flag is safe here because this regex is only used with
  * `String.prototype.replace`, which does not rely on `lastIndex`.
- * @type {RegExp}
  */
-const RE_SPACE = /\s+/g;
+const SPACE_RE = /\s+/g;
 
 /**
+ * @constant {RegExp} SPLIT_PUNC_RE
  * @ignore
  * Capturing split pattern that isolates word tokens from non-word tokens.
  * A "word" is defined as:
@@ -33,37 +33,38 @@ const RE_SPACE = /\s+/g;
  * Using a capturing group in `split` preserves the matched words in the
  * resulting array, interleaved with the non-word segments (punctuation,
  * spaces, numbers).
- * @type {RegExp}
  */
-const RE_SPLIT_PUNC = /([a-zA-Z][a-zA-Z']*[a-zA-Z]|[a-zA-Z])/;
+const SPLIT_PUNC_RE = /([a-zA-Z][a-zA-Z']*[a-zA-Z]|[a-zA-Z])/;
 
 /**
+ * @constant {RegExp} TEST_WORD_RE
  * @ignore
  * Tests whether a token begins with a letter, identifying it as a word
  * token eligible for spell correction.
  * Non-word tokens (punctuation, numbers, whitespace) fail this test
  * and are passed through unchanged.
- * @type {RegExp}
  */
-const RE_TEST_WORD = /^[a-zA-Z]/;
+const TEST_WORD_RE = /^[a-zA-Z]/;
 
 /**
+ * @constant {RegExp} RE_NORM_PUNC
  * @ignore
  * Normalizes irregular punctuation sequences:
  * - Multiple commas, exclamation marks, or question marks → single character
  * - Ellipsis variants (.. or ....) → standard ellipsis (...)
  * - Single underscore or tilde → hyphen
  * - Double hyphen or more → em dash
- * @type {RegExp}
  */
 const RE_NORM_PUNC = /([,!?])\1+|\.{4,}|\.{2}|[_~]|--+/g;
 
 /**
- * @ignore
  * @function normalizePunctuation
+ * @ignore
  * @description
  * Normalizes irregular punctuation sequences in a string.
+ * 
  * @param {string} str - Input string.
+ * 
  * @returns {string} Normalized string.
  */
 const normalizePunctuation = str => str.replace(RE_NORM_PUNC, (match, char) => (
@@ -74,37 +75,42 @@ const normalizePunctuation = str => str.replace(RE_NORM_PUNC, (match, char) => (
 ));
 
 /**
- * @ignore
  * @function identity
+ * @ignore
  * @description
  * Identity filter function. Used with `Array.prototype.filter` to remove
  * empty strings produced at the edges of a `split` result when the input
  * begins or ends with a non-word character.
+ * 
  * @param {string} x - Token to test.
+ * 
  * @returns {string} The token itself (falsy for empty strings).
  */
 const identity = x => x;
 
 /**
- * @ignore
  * @function mapFunc
+ * @ignore
  * @description
  * Normalizes internal whitespace within a token to a single space.
  * Applied after splitting to clean up any multi-space sequences that
  * may appear in non-word segments.
+ * 
  * @param {string} x - Token to normalize.
+ * 
  * @returns {string} Token with consecutive whitespace collapsed.
  */
-const mapFunc = x => x.replace(RE_SPACE, " ");
+const mapFunc = x => x.replace(SPACE_RE, " ");
 
 /**
- * @ignore
  * @function splitWords
+ * @ignore
  * @description
  * Splits a text string into an array of alternating word and non-word
  * tokens, filtering empty strings and normalizing whitespace.
  *
  * @param {string} text - The input string to tokenize.
+ * 
  * @returns {string[]} Array of tokens. Word tokens and non-word tokens
  * (punctuation, spaces, numbers) alternate, depending on the input.
  *
@@ -116,14 +122,14 @@ const mapFunc = x => x.replace(RE_SPACE, " ");
  * splitWords("don't stop");
  * // => ["don't", " ", "stop"]
  */
-const splitWords = text => (text || "").trim().split(RE_SPLIT_PUNC).filter(identity).map(mapFunc);
+const splitWords = text => (text || "").trim().split(SPLIT_PUNC_RE).filter(identity).map(mapFunc);
 
 /**
+ * @constant {Object<string, string>} CORRECTIONS
  * @ignore
  * Known misspellings where nspell's first suggestion is incorrect.
  * Keys are lowercase misspellings, values are the intended corrections.
  * Takes priority over nspell suggestions in createSpellMapFunc.
- * @type {Object<string, string>}
  */
 const CORRECTIONS = {
   // ---- Names ----
@@ -306,8 +312,8 @@ const CORRECTIONS = {
 };
 
 /**
- * @ignore
  * @function createSpellMapFunc
+ * @ignore
  * @description
  * Memoized factory that returns a per-token spell-correction function bound
  * to a given `nspell` instance. The result is cached by spell engine identity —
@@ -365,7 +371,7 @@ const createSpellMapFunc = ((lastSpell, lastFunc) => (
     || (
       lastSpell = spell,
       lastFunc = part => {
-        if (!RE_TEST_WORD.test(part)) return part;
+        if (!TEST_WORD_RE.test(part)) return part;
         const lower = part.toLowerCase();
         if (CORRECTIONS[lower]) return CORRECTIONS[lower];
         return spell.correct(part) ? part : spell.suggest(part)[0] || part;

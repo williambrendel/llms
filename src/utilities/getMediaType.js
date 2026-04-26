@@ -2,6 +2,23 @@
 const path = require("path");
 
 /**
+ * @file getMediaType.js
+ * @brief MIME type resolver and static registry for common file extensions.
+ *
+ * Exports a single function that resolves a standardized MIME media type from
+ * a raw extension, dot-prefixed extension, filename, or full file path.
+ * Resolution is case-insensitive and falls back to a caller-supplied default
+ * or `"text/plain"` when no match is found.
+ *
+ * All registered types are mirrored with dot-prefixed keys so both `"pdf"`
+ * and `".pdf"` resolve identically. The function object itself carries all
+ * type entries as static properties for direct access (e.g. `getMediaType.pdf`),
+ * and is frozen to prevent runtime modification of the registry.
+ *
+ * @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Basics_of_HTTP/MIME_types
+ */
+
+/**
  * @function getMediaType
  * @description
  * Resolves a standardized MIME media type from a provided file extension, 
