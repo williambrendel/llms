@@ -70,7 +70,7 @@
  * @example
  * // Configuration is immutable
  * const CONFIG = require("./config");
- * CONFIG.featureExtractionModel = "Xenova/all-MiniLM-L6-v2"; // ❌ Throws TypeError in strict mode
+ * CONFIG.featureExtractionModel = "Xenova/all-MiniLM-L6-v2"; // 🚨 Throws TypeError in strict mode
  * 
  * @see {@link https://huggingface.co/docs/transformers.js|Transformers.js Documentation}
  */

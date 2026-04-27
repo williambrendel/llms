@@ -45,7 +45,7 @@ const batch = async (config, ...requests) => {
 
   if (!apiKey) {
     const error = "ANTHROPIC_API_KEY environment variable not set";
-    console.error("❌ Error:", error);
+    console.error("🚨 Error:", error);
     throw Error(error);
   }
 

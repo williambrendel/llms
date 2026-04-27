@@ -99,7 +99,7 @@ const run = async (config, prompt, ...documents) => {
   // Check for the API key.
   if (!clientConfig.apiKey) {
     const error = "ANTHROPIC_API_KEY environment variable not set\nCreate a .env file with: ANTHROPIC_API_KEY=your_api_key_here";
-    console.error("❌ Error:", error);
+    console.error("🚨 Error:", error);
     throw Error(error);
   }
 
@@ -112,7 +112,7 @@ const run = async (config, prompt, ...documents) => {
   // Check if input content is empty
   if (!numBytes) {
     const error = "Content is missing or empty";
-    console.error("❌ Error:", error);
+    console.error("🚨 Error:", error);
     throw Error(error);
   }
 
