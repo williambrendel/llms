@@ -105,6 +105,24 @@ class Conversation extends Array {
   }
 
   /**
+   * @getter last
+   * @description Returns the most recent {@link Turn} in the conversation.
+   * Provides a convenient shorthand for accessing the tail of the messages
+   * array without manual length calculations.
+   *
+   * @returns {Turn|undefined} The final turn in the collection, or `undefined`
+   * if the conversation is empty.
+   *
+   * @example
+   * const conversation = new Conversation("Hello!");
+   * const lastTurn = conversation.last; // Accessed as a property
+   * // lastTurn.role -> "user"
+   */
+  get last() {
+    return this[this.length - 1];
+  }
+
+  /**
    * @method continue
    * @description Appends an assistant turn from a `Response` and a new user
    * turn in one atomic operation, guaranteeing strict role alternation.

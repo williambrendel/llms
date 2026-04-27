@@ -227,6 +227,25 @@ describe("Conversation — construction", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Conversation.last
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("Conversation.last", () => {
+
+  test("last returns the final turn", () => {
+    const conv = new Conversation(
+      { role: "user",      content: "Q" },
+      { role: "assistant", content: "A" }
+    );
+    expect(conv.last).toBe(conv[1]);
+  });
+
+  test("last on empty conversation returns undefined", () => {
+    expect(new Conversation().last).toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Conversation.continue
 // ─────────────────────────────────────────────────────────────────────────────
 
