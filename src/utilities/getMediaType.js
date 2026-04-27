@@ -78,6 +78,7 @@ const MEDIA_TYPES = {
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   xml: "application/xml",
   csv: "application/csv",
+  markdown: "text/markdown",
   md: "text/markdown",
   ppl: "text/plain",
   dsl: "text/plain",

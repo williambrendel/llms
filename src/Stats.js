@@ -104,6 +104,40 @@ class StatsItem {
       ) || null;
 
     costFn && Object.defineProperty(this, "cost", { value: costFn });
+
+    Object.defineProperty(this, "toString", {
+      value: function() {
+        const isBatch = this.succeeded !== undefined;
+        const hasCost = typeof this.cost === "function";
+        const cost    = hasCost && this.cost();
+
+        let str = "\n💰 Token Usage:\n─────────────────────────────────────\n";
+        str += `   Duration: ${this.duration}s\n`;
+
+        if (isBatch) {
+          str += `   Requests: ${this.succeeded} succeeded, ${this.errored} errored\n`;
+        }
+
+        const totalTokens = this.inputTokens + this.outputTokens;
+        str += `   Input tokens:  ${this.inputTokens.toLocaleString()}\n`;
+        str += `   Output tokens: ${this.outputTokens.toLocaleString()}\n`;
+        str += `   Total tokens:  ${totalTokens.toLocaleString()}\n`;
+
+        this.cacheHit  && (str += `   Cache hit  — ${(this.cachedTokensRead    || 0).toLocaleString()} tokens read\n`);
+        this.cacheMiss && (str += `   Cache miss — ${(this.cachedTokensCreated || 0).toLocaleString()} tokens written\n`);
+
+        if (hasCost && cost) {
+          str += `   Estimated cost: $${cost.total.toFixed(4)}\n`;
+          cost.uncachedInput && (str += `     Uncached input: $${cost.uncachedInput.toFixed(4)}\n`);
+          cost.cacheRead     && (str += `     Cache read:     $${cost.cacheRead.toFixed(4)}\n`);
+          cost.cacheWrite    && (str += `     Cache write:    $${cost.cacheWrite.toFixed(4)}\n`);
+          cost.output        && (str += `     Output:         $${cost.output.toFixed(4)}\n`);
+        }
+
+        str += "─────────────────────────────────────\n";
+        return str;
+      }
+    });
   }
 }
 
@@ -175,38 +209,7 @@ class Stats extends Array {
     sources.length && this.push(...Stats.normalize(...sources));
 
     Object.defineProperty(this, "toString", {
-      value: function() {
-        const item    = this.collapse();
-        const isBatch = item.succeeded !== undefined;
-        const hasCost = typeof item.cost === "function";
-        const cost    = hasCost && item.cost();
-
-        let str = "\n💰 Token Usage:\n─────────────────────────────────────\n";
-        str += `   Duration: ${item.duration}s\n`;
-
-        if (isBatch) {
-          str += `   Requests: ${item.succeeded} succeeded, ${item.errored} errored\n`;
-        }
-
-        const totalTokens = item.inputTokens + item.outputTokens;
-        str += `   Input tokens:  ${item.inputTokens.toLocaleString()}\n`;
-        str += `   Output tokens: ${item.outputTokens.toLocaleString()}\n`;
-        str += `   Total tokens:  ${totalTokens.toLocaleString()}\n`;
-
-        item.cacheHit  && (str += `   Cache hit  — ${(item.cachedTokensRead    || 0).toLocaleString()} tokens read\n`);
-        item.cacheMiss && (str += `   Cache miss — ${(item.cachedTokensCreated || 0).toLocaleString()} tokens written\n`);
-
-        if (hasCost && cost) {
-          str += `   Estimated cost: $${cost.total.toFixed(4)}\n`;
-          cost.uncachedInput && (str += `     Uncached input: $${cost.uncachedInput.toFixed(4)}\n`);
-          cost.cacheRead     && (str += `     Cache read:     $${cost.cacheRead.toFixed(4)}\n`);
-          cost.cacheWrite    && (str += `     Cache write:    $${cost.cacheWrite.toFixed(4)}\n`);
-          cost.output        && (str += `     Output:         $${cost.output.toFixed(4)}\n`);
-        }
-
-        str += "─────────────────────────────────────\n";
-        return str;
-      }
+      value: function() { return String(this.collapse()); }
     });
   }
 

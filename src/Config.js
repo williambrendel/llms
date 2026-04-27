@@ -121,20 +121,27 @@ class Config {
     }
 
     // Assign cost if needed.
-    cost && (
+    cost && this.pricing && typeof this.pricing.cost !== "function" && (
       Object.defineProperty(this.pricing, "cost", {
-        value: function(...args) { return cost.apply(this, args); }
+        value:        function(...args) { return cost.apply(this, args); },
+        enumerable:   false,
+        writable:     false,
+        configurable: false
       })
     );
 
     // Safe getter — new Config from the apiKey-free merged object.
     Object.defineProperty(this, "safe", { get() {
       return apiKey && (
-        cost && Object.defineProperty(rest.pricing, "cost", {
-          value: function(...args) { return cost.apply(this, args); }
-        }),
+        cost && rest.pricing && typeof rest.pricing.cost !== "function" &&
+          Object.defineProperty(rest.pricing, "cost", {
+            value:        function(...args) { return cost.apply(this, args); },
+            enumerable:   false,
+            writable:     false,
+            configurable: false
+          }),
         new Config(rest)
-       ) || this;
+      ) || this;
     } });
 
     // toString for logging.

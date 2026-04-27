@@ -106,32 +106,38 @@ class Pricing {
       }
     });
 
+    /**
+     * @method cost
+     * @description Computes an itemized cost breakdown for a given `Stat`.
+     * Applies the batch discount multiplier when `stat.succeeded` is present.
+     *
+     * @param {Stat} stat - Usage statistics to price.
+     * @returns {ItemizedCost} Itemized cost object with a `total` field.
+     *
+     * @example
+     * const { total, uncachedInput, cacheRead, output } = pricing.cost(stat);
+     * console.log(`Estimated cost: $${total.toFixed(4)}`);
+     */
+    Object.defineProperty(this, "cost", {
+      value: function(stat) {
+        const discount         = stat.succeeded !== undefined ? this.batchDiscount : 1.0;
+        const cacheReadTokens  = stat.cacheHit  ? (stat.cachedTokensRead    ?? 0) : 0;
+        const cacheWriteTokens = stat.cacheMiss ? (stat.cachedTokensCreated ?? 0) : 0;
+
+        const uncachedInput = ((stat.inputTokens  || 0) / 1_000_000) * this.input.standard   * discount;
+        const cacheRead     = (cacheReadTokens     / 1_000_000)       * this.input.cacheRead  * discount;
+        const cacheWrite    = (cacheWriteTokens    / 1_000_000)       * this.input.cacheWrite * discount;
+        const output        = ((stat.outputTokens || 0) / 1_000_000)  * this.output.standard  * discount;
+
+        return { uncachedInput, cacheRead, cacheWrite, output, total: uncachedInput + cacheRead + cacheWrite + output };
+      }
+    });
+
+    // Freeze to prevent later changes.
+    // Pricing are fixed and should not be change once declared.
+    Object.freeze(this.input);
+    Object.freeze(this.output);
     Object.freeze(this);
-  }
-
-  /**
-   * @method cost
-   * @description Computes an itemized cost breakdown for a given `Stat`.
-   * Applies the batch discount multiplier when `stat.succeeded` is present.
-   *
-   * @param {Stat} stat - Usage statistics to price.
-   * @returns {ItemizedCost} Itemized cost object with a `total` field.
-   *
-   * @example
-   * const { total, uncachedInput, cacheRead, output } = pricing.cost(stat);
-   * console.log(`Estimated cost: $${total.toFixed(4)}`);
-   */
-  cost(stat) {
-    const discount       = stat.succeeded !== undefined ? this.batchDiscount : 1.0;
-    const cacheReadTokens  = stat.cacheHit  ? (stat.cachedTokensRead    ?? 0) : 0;
-    const cacheWriteTokens = stat.cacheMiss ? (stat.cachedTokensCreated ?? 0) : 0;
-
-    const uncachedInput = ((stat.inputTokens  || 0) / 1_000_000) * this.input.standard   * discount;
-    const cacheRead     = (cacheReadTokens     / 1_000_000)       * this.input.cacheRead  * discount;
-    const cacheWrite    = (cacheWriteTokens    / 1_000_000)       * this.input.cacheWrite * discount;
-    const output        = ((stat.outputTokens || 0) / 1_000_000)  * this.output.standard  * discount;
-
-    return { uncachedInput, cacheRead, cacheWrite, output, total: uncachedInput + cacheRead + cacheWrite + output };
   }
 }
 

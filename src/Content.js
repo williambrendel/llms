@@ -140,7 +140,7 @@ class Item {
    */
   constructor(input, inputType) {
     const source = {};
-    let cache_control, enableCache;
+    let cache_control, enableCache, rawText = "", binary;
 
     // Normalize input.
     if (typeof input === "object") {
@@ -159,7 +159,7 @@ class Item {
       enableCache = _enableCache;
 
       // Get content.
-      let text = data === undefined && other || data, md = mediaType, rawText = "", binary;
+      let text = data === undefined && other || data, md = mediaType;
 
       try {
         // Convert content if object.
@@ -365,7 +365,12 @@ class Content extends Array {
 
     // For access.
     Object.defineProperty(this, "prompt", { get() { return this[0]; } });
-    Object.defineProperty(this, "documents", { get() { return this.slice(1); } });
+    Object.defineProperty(this, "documents", { get() {
+      if (this.length < 2) return [];
+      const l = this.length - 1, docs = new Array(l);
+      for (let i = 0; i !== l; i++) docs[i] = this[i + 1];
+      return docs;
+    } });
 
     // Define the toString for logging.
     Object.defineProperty(this, "toString", {
@@ -398,6 +403,7 @@ Content.create = (...args) => new Content(...args);
  * @ignore
  * Default export with freezing.
  */
+Content.Item = Item;
 module.exports = Object.freeze(Object.defineProperty(Content, "Content", {
   value: Content
 }));
