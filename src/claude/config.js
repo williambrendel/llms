@@ -53,7 +53,7 @@ const OPUS4_CONFIG = Object.freeze({
   max_tokens: 16000,
   temperature: 0.5,
   pollInterval: 5000,
-  pricing: PRICING["claude-opus-4-20250514"],
+  pricing: PRICING["claude-opus-4-20250514"]
 });
 
 /**
@@ -134,42 +134,6 @@ const HAIKU45_CONFIG = Object.freeze({
  * @constant
  * @readonly
  * @description
- * Haiku 4.5 configuration for **pass 1** (chunk extraction).
- * Temperature 0 ensures deterministic, consistent chunking across runs.
- *
- * @property {string}  model        - `"claude-haiku-4-5-20251001"`
- * @property {number}  max_tokens   - `32000`
- * @property {number}  temperature  - `0` — deterministic
- * @property {number}  pollInterval - `5000`
- * @property {Pricing} pricing      - See {@link PRICING} entry for this model.
- */
-const HAIKU45_PASS1_CONFIG = Object.freeze({
-  ...HAIKU45_CONFIG,
-  temperature: 0,
-});
-
-/**
- * @constant
- * @readonly
- * @description
- * Haiku 4.5 configuration for **pass 2** (Q&A generation).
- * Temperature 0.3 allows variance in variant phrasing and anchor diversity.
- *
- * @property {string}  model        - `"claude-haiku-4-5-20251001"`
- * @property {number}  max_tokens   - `32000`
- * @property {number}  temperature  - `0.3`
- * @property {number}  pollInterval - `5000`
- * @property {Pricing} pricing      - See {@link PRICING} entry for this model.
- */
-const HAIKU45_PASS2_CONFIG = Object.freeze({
-  ...HAIKU45_CONFIG,
-  temperature: 0.3,
-});
-
-/**
- * @constant
- * @readonly
- * @description
  * Main configuration object for Claude API interactions.
  *
  * `DEFAULT_CONFIG` re-exports {@link SONNET46_CONFIG} as the application default and
@@ -216,8 +180,6 @@ const DEFAULT_CONFIG = {
   SONNET45_CONFIG,
   SONNET46_CONFIG,
   HAIKU45_CONFIG,
-  HAIKU45_PASS1_CONFIG,
-  HAIKU45_PASS2_CONFIG,
   PRICING,
 };
 

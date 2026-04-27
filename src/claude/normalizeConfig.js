@@ -1,3 +1,8 @@
+"use strict";
+
+const Config = require("../Config");
+const DEFAULT_CONFIG = require("./config");
+
 /**
  * @function normalizeConfig
  * @description

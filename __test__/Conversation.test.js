@@ -167,6 +167,14 @@ describe("Conversation.normalize — individual sources", () => {
     expect(turns[2].role).toBe("assistant");
     expect(turns[2].content).toBe("R");
   });
+
+  test("prompt-shaped object { data, enableCache } → user Turn with Content", () => {
+    const conv = new Conversation({ data: "Hello", enableCache: true });
+    expect(conv.length).toBe(1);
+    expect(conv[0].role).toBe("user");
+    expect(conv[0].content).toBeInstanceOf(Content);
+    expect(conv[0].content.cacheEnabled).toBeTruthy();
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

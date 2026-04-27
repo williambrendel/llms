@@ -179,24 +179,33 @@ class Conversation extends Array {
  */
 Conversation.normalize = (...sources) => {
   const turns = [];
+  let prompt = sources[0];
 
-  // If the first source is a prompt (string or Content), treat all sources
-  // as (prompt, ...documents) — mirrors the run() signature.
-  const firstIsPrompt = sources[0] !== null
-    && (typeof sources[0] === "string" || sources[0] instanceof Content);
+  // Pass through.
+  if (prompt instanceof Content && sources.length === 1) {
+    turns.push(new Turn("user", prompt));
+    return turns;
+  }
 
-  if (firstIsPrompt) {
-    const [prompt, ...documents] = sources;
-    turns.push(new Turn("user",
-      prompt instanceof Content && !documents.length
-        ? prompt
-        : new Content(prompt, ...documents)
-    ));
+  // Normalize sources and prompt.
+  sources = sources.flat(Infinity);
+  prompt = sources[0];
+
+  if (prompt && (
+    typeof prompt === "string"
+    || (
+      typeof prompt === "object"
+      && !(prompt instanceof Turn)
+      && typeof prompt.role !== "string"
+      && typeof prompt.output === "undefined"
+    )
+  )) {
+    turns.push(new Turn("user", new Content(...sources)));
     return turns;
   }
 
   // Otherwise normalize each source individually.
-  for (const source of sources.flat(Infinity)) {
+  for (const source of sources) {
     if (!source) continue;
 
     // Pass-through.

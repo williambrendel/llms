@@ -141,12 +141,22 @@ class Item {
   constructor(input, inputType) {
     const source = {};
     let cache_control, enableCache, rawText = "", binary;
+    input instanceof Content && (input = input.prompt);
 
     // Normalize input.
     if (typeof input === "object") {
+      input || (input = {});
+
+      // input is Item-like.
+      input.source && input.type && (
+        inputType || (inputType = input.type),
+        input = input.source
+      );
+
       // Get input data.
       const {
-        data,
+        text: _text,
+        data = _text,
         cache_control: _cache_control,
         enable_cache,
         enableCache: _enableCache = enable_cache,
@@ -255,9 +265,9 @@ class Item {
  * Aggregate statistics across all items are exposed as non-enumerable properties
  * for use in token estimation and cost calculation.
  *
- * @param {string|Object} prompt - The user prompt. Must be non-empty.
- * @param {...(string|Object|Array)} documents - Zero or more document inputs.
- *   Arrays are flattened. Invalid items are skipped with a warning.
+ * @param {...(string|Object|Array)} sources - Prompt followed by zero or more
+ *   document inputs. The first element is the prompt; remaining elements are
+ *   documents. Arrays are flattened at any depth before processing.
  *
  * @throws {Error} If `prompt` is falsy.
  *
@@ -317,17 +327,16 @@ class Content extends Array {
    * 4. Calls `super(prompt, ...documents)` to populate the Array.
    * 5. Defines non-enumerable stat properties and access getters.
    *
-   * @param {string|Object} prompt - The user prompt. Must be non-empty and
-   *   normalizable by `Item`. Becomes `this[0]` and `this.prompt`.
-   * @param {...(string|Object|Array)} documents - Zero or more document inputs.
-   *   Nested arrays are flattened via `.flat(Infinity)`. Each item is normalized
-   *   by `Item` with `inputType = "document"`. Items that throw are skipped with
-   *   `console.warn` and excluded from the final array and stats.
+   * @param {...(string|Object|Array)} sources - Prompt followed by zero or more
+   *   document inputs. The first element is the prompt; remaining elements are
+   *   documents. Arrays are flattened at any depth before processing.
    *
    * @throws {Error} If `prompt` is falsy.
    * @throws {Error} If `prompt` normalization fails (propagated from `Item`).
    */
-  constructor(prompt, ...documents) {
+  constructor(...sources) {
+    let [prompt, ...documents] = sources.flat(Infinity);
+
     if (!prompt) {
       throw Error("Input prompt must NOT be empty");
     }
@@ -337,9 +346,6 @@ class Content extends Array {
 
     // Collect stats.
     let cacheEnabled = prompt.cacheEnabled, numBytes = prompt.numBytes || 0, estimatedNumTokens = prompt.estimatedNumTokens || 0;
-
-    // Normalize documents.
-    documents = documents.flat(Infinity);
 
     // Documents.
     let j = 0;
