@@ -61,7 +61,7 @@ const parseResponseJson = text => {
   try {
     return JSON.parse(clean);
   } catch (err) {
-    console.error(`❌ Failed to parse JSON:\n${clean.slice(0, 500)}`);
+    console.error(`🚨 Failed to parse JSON:\n${clean.slice(0, 500)}`);
     throw err;
   }
 };
