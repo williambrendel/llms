@@ -80,7 +80,7 @@ const run = async (config, promptOrConversation, ...documents) => {
 
   if (!clientConfig.apiKey) {
     const error = "ANTHROPIC_API_KEY not set — create a .env file with: ANTHROPIC_API_KEY=your_key";
-    console.error("❌ Error:", error);
+    console.error("🚨 Error:", error);
     throw Error(error);
   }
 
@@ -91,14 +91,14 @@ const run = async (config, promptOrConversation, ...documents) => {
 
   if (!conversation.length) {
     const error = "Conversation must have at least one turn";
-    console.error("❌ Error:", error);
+    console.error("🚨 Error:", error);
     throw Error(error);
   }
 
   const lastTurn = conversation.last;
   if (lastTurn.role !== "user") {
     const error = "Last conversation turn must be a user turn";
-    console.error("❌ Error:", error);
+    console.error("🚨 Error:", error);
     throw Error(error);
   }
 
@@ -109,7 +109,7 @@ const run = async (config, promptOrConversation, ...documents) => {
 
   if (!content.numBytes) {
     const error = "Last user turn content is empty";
-    console.error("❌ Error:", error);
+    console.error("🚨 Error:", error);
     throw Error(error);
   }
 
