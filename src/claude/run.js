@@ -1,186 +1,176 @@
+/**
+ * @file run.js
+ * @brief Single-request orchestrator for the Claude Messages API.
+ */
+
 "use strict";
 
-const Anthropic = require('@anthropic-ai/sdk').default;
-const normalizeConfig = require("./normalizeConfig");
-const Content = require("../Content");
+const Anthropic             = require("@anthropic-ai/sdk").default;
+const normalizeConfig       = require("./normalizeConfig");
+const { Conversation, Turn} = require("../Conversation");
+const Content               = require("../Content");
+const Response              = require("../Response");
+const { StatsItem }         = require("../Stats");
 
 /**
  * @function run
  * @async
- * @description
- * Orchestrates a request to the Anthropic Claude API, supporting multi-document input
- * and automated prompt caching.
+ * @description Sends a single prompt (with optional documents) or a pre-built
+ * `Conversation` to the Claude Messages API and returns a normalized
+ * {@link Response} envelope.
  *
- * This function processes a prompt and an arbitrary number of documents, handles
- * configuration merging, and manages the `"prompt-caching-2024-07-31"` beta header
- * if caching is requested via the input objects.
+ * Responsibilities:
+ * - Merges caller config over `DEFAULT_CONFIG` via `normalizeConfig`.
+ * - Accepts either `(config, prompt, ...documents)` or
+ *   `(config, conversation)` — normalizes both to a `Conversation`.
+ * - Validates the last turn is a user turn with non-empty content.
+ * - Attaches the `"prompt-caching-2024-07-31"` beta header when any content
+ *   item in the last user turn requests caching.
+ * - Strips non-API config keys (`pollInterval`, `pricing`) before the SDK
+ *   call; `pricing` is forwarded to the `StatsItem` for cost reporting.
+ * - Appends the assistant reply to the conversation before returning so
+ *   `response.conversation` is the complete exchange ready for continuation.
+ * - Returns a `Response` holding the safe config, full conversation,
+ *   output, and a `StatsItem`.
  *
- * Pricing metadata from the resolved config is attached to the returned `input` object
- * after the API call (it is stripped before the call so the SDK does not reject unknown fields).
+ * @param {Object|Config}                config
+ * @param {string|Content|Conversation}  promptOrConversation
+ * @param {...(string|Object|Array)}      documents
  *
- * @param {Object} config                   - Configuration for the Anthropic client and model.
- * @param {string} config.apiKey            - Anthropic API authentication key.
- * @param {string} [config.model]           - Model identifier. Defaults to `DEFAULT_CONFIG.model`.
- * @param {number} [config.max_tokens]      - Maximum tokens to generate. Defaults to `DEFAULT_CONFIG.max_tokens`.
- * @param {number} [config.temperature]     - Sampling temperature (`0.0–1.0`). Defaults to `DEFAULT_CONFIG.temperature`.
- * @param {Object} [config.pricing]         - Per-token pricing rates. Defaults to `DEFAULT_CONFIG.pricing`.
- *   Stripped before the API call and re-attached to `input` afterwards.
- * @param {Object} [config.pricing.input]
- * @param {number} [config.pricing.input.standard]    - Uncached input rate ($/1M tokens).
- * @param {number} [config.pricing.input.cacheWrite]  - Cache write rate ($/1M tokens).
- * @param {number} [config.pricing.input.cacheRead]   - Cache read rate ($/1M tokens).
- * @param {Object} [config.pricing.output]
- * @param {number} [config.pricing.output.standard]   - Output token rate ($/1M tokens).
+ * @returns {Promise<Response>}
  *
- * @param {string|Object} prompt - The primary user prompt.
- *   If an Object: `{ data: string, enableCache?: boolean, cache_control?: Object }`.
- * @param {...(string|Object|Array)} documents - Variadic list of documents to append.
- *   Each entry can be a raw string or `{ data, type, mediaType, enableCache, cache_control }`.
- *   Arrays are flattened automatically.
- *
- * @returns {Promise<Object>} A response envelope.
- * @returns {Object}  return.params                            - Model parameters sent to the API.
- * @returns {string}  return.params.model                      - Model used for this request.
- * @returns {number}  return.params.max_tokens                 - Token limit applied.
- * @returns {number}  return.params.temperature                - Temperature applied.
- * @returns {Object}  return.params.pricing                    - Pricing rates for the active model.
- * @returns {number}  return.params.pricing.input.standard     - Standard uncached input rate ($/1M).
- * @returns {number}  return.params.pricing.input.cacheWrite   - Cache write rate ($/1M).
- * @returns {number}  return.params.pricing.input.cacheRead    - Cache read rate ($/1M).
- * @returns {number}  return.params.pricing.output.standard    - Output rate ($/1M).
- * @returns {Array}   return.input                             - Messages array sent to the API.
- * @returns {Object}  return.output                            - Result object.
- * @returns {boolean} return.output.success                    - `true` if the API call succeeded.
- * @returns {string}  [return.output.text]                     - Concatenated text response (on success).
- * @returns {string}  [return.output.error]                    - Error message (on failure).
- * @returns {Object}  return.stats                             - Performance and usage metrics.
- * @returns {string}  return.stats.duration                    - Elapsed time in seconds (2 d.p.).
- * @returns {number}  return.stats.inputTokens                 - Total input tokens consumed.
- * @returns {number}  return.stats.outputTokens                - Total output tokens generated.
- * @returns {boolean} return.stats.cache                       - Whether caching was enabled.
- * @returns {boolean} [return.stats.cacheHit]                  - `true` if response was served from cache.
- * @returns {boolean} [return.stats.cacheMiss]                 - `true` if a new cache entry was created.
- * @returns {number}  [return.stats.cachedTokensRead]          - Tokens read from cache on a hit.
- * @returns {number}  [return.stats.cachedTokensCreated]       - Tokens written to cache on a miss.
+ * @throws {Error} If `config.apiKey` is absent.
+ * @throws {Error} If the conversation is empty or last turn is not user.
+ * @throws {Error} If the last user turn content has zero bytes.
+ * @throws {Error} Re-throws any Anthropic SDK error.
  *
  * @example
- * // Basic usage
- * const result = await run(SONNET46_CONFIG, "Summarize this:", doc1, doc2);
- * console.log(result.input.pricing.input.standard); // 3
+ * // Single prompt
+ * const response = await run(config, "What is Legionella?");
+ * console.log(response.output.text);
+ * console.log(response.output.json());
+ * console.log(String(response));
  *
  * @example
- * // With prompt caching enabled
- * const result = await run(
- *   HAIKU45_CONFIG,
- *   { data: "Analyze these logs:", enableCache: true },
- *   largeDocument
- * );
- * console.log(result.input.pricing.input.cacheRead); // 0.08
+ * // Single prompt with documents
+ * const response = await run(config, "Summarize this:", doc1, doc2);
  *
  * @example
- * // Compute actual cost from a result
- * const { params: { pricing }, stats } = result;
- * const cost =
- *   ((stats.cachedTokensRead    ?? 0) / 1_000_000) * pricing.input.cacheRead   +
- *   ((stats.cachedTokensCreated ?? 0) / 1_000_000) * pricing.input.cacheWrite  +
- *   ((stats.inputTokens - (stats.cachedTokensRead ?? 0) - (stats.cachedTokensCreated ?? 0))
- *                                     / 1_000_000) * pricing.input.standard    +
- *   (stats.outputTokens               / 1_000_000) * pricing.output.standard;
- * console.log(`$${cost.toFixed(4)}`);
+ * // Pre-built conversation
+ * const response = await run(config, conversation);
+ *
+ * @example
+ * // Multi-turn loop
+ * const r1 = await run(config, "What is Legionella?");
+ * r1.conversation.continue(r1, "What are the control measures?");
+ * const r2 = await run(config, r1.conversation);
+ *
+ * @example
+ * // Accumulate stats across calls
+ * const stats = new Stats(r1, r2);
+ * console.log(String(stats));
  */
-const run = async (config, prompt, ...documents) => {
+const run = async (config, promptOrConversation, ...documents) => {
   const startTime = Date.now();
 
-  // Normalize input configuration.
+  // Normalize and split config — apiKey goes to the client, safe copy to Response.
   config = normalizeConfig(config);
   const clientConfig = { apiKey: config.apiKey };
-  config = config.safe;
+  const safeConfig   = config.safe;
 
-  // Check for the API key.
   if (!clientConfig.apiKey) {
-    const error = "ANTHROPIC_API_KEY environment variable not set\nCreate a .env file with: ANTHROPIC_API_KEY=your_api_key_here";
-    console.error("🚨 Error:", error);
+    const error = "ANTHROPIC_API_KEY not set — create a .env file with: ANTHROPIC_API_KEY=your_key";
+    console.error("❌ Error:", error);
     throw Error(error);
   }
 
-  // Get input content and caching options.
-  const content = new Content(prompt, ...documents), {
-    numBytes,
-    cacheEnabled
-  } = content, contentLength = content.length;
+  // Normalize input to a Conversation.
+  const conversation = promptOrConversation instanceof Conversation
+    ? promptOrConversation
+    : new Conversation(promptOrConversation, ...documents);
 
-  // Check if input content is empty
-  if (!numBytes) {
-    const error = "Content is missing or empty";
-    console.error("🚨 Error:", error);
+  if (!conversation.length) {
+    const error = "Conversation must have at least one turn";
+    console.error("❌ Error:", error);
     throw Error(error);
   }
 
-  // Build API messages.
-  const messages = [{ role: "user", content }];
-
-  // Set caching options to the API.
-  if (cacheEnabled) {
-    clientConfig.defaultHeaders = { "anthropic-beta": "prompt-caching-2024-07-31" };
+  const lastTurn = conversation.last;
+  if (lastTurn.role !== "user") {
+    const error = "Last conversation turn must be a user turn";
+    console.error("❌ Error:", error);
+    throw Error(error);
   }
 
-  // Create the client.
+  // Extract Content from last user turn for cache detection and byte validation.
+  const content = lastTurn.content instanceof Content
+    ? lastTurn.content
+    : new Content(lastTurn.content);
+
+  if (!content.numBytes) {
+    const error = "Last user turn content is empty";
+    console.error("❌ Error:", error);
+    throw Error(error);
+  }
+
+  // Enable caching header if any item in the last turn requests it.
+  content.cacheEnabled && (
+    clientConfig.defaultHeaders = { "anthropic-beta": "prompt-caching-2024-07-31" }
+  );
+
   const client = new Anthropic(clientConfig);
 
-  // Extract the model parameters.
-  const { pollInterval, onPoll, pricing, ...modelParams } = config;
-  modelParams.messages = messages;
+  // Strip non-API props before sending.
+  const { pollInterval, pricing, ...modelParams } = safeConfig;
+  modelParams.messages = conversation;
 
-  // Query API.
-  const response = await client.messages.create(modelParams);
+  // Call API.
+  const apiResponse = await client.messages.create(modelParams);
 
-  // Collect stats.
+  // Timing.
   const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-  const cacheStats = cacheEnabled && {
-    cacheHit: (response.usage.cache_read_input_tokens || 0) > 0,
-    cacheMiss: (response.usage.cache_creation_input_tokens || 0) > 0,
-    cachedTokensRead: response.usage.cache_read_input_tokens || 0,
-    cachedTokensCreated: response.usage.cache_creation_input_tokens || 0
-  } || {};
+
+  // Cache outcome.
+  const cacheReadTokens  = apiResponse.usage.cache_read_input_tokens     || 0;
+  const cacheWriteTokens = apiResponse.usage.cache_creation_input_tokens || 0;
+  const cacheStats       = content.cacheEnabled ? {
+    cacheHit:            cacheReadTokens  > 0,
+    cacheMiss:           cacheWriteTokens > 0,
+    cachedTokensRead:    cacheReadTokens,
+    cachedTokensCreated: cacheWriteTokens,
+  } : {};
 
   // Collect text response.
-  const text = response.content
+  const text = apiResponse.content
     .filter(block => block.type === "text")
     .map(block => block.text)
     .join("\n");
 
-  // Collect stopping reasons.
-  const {
-    stop_reason,
-    stop_reasons = stop_reason,
-    stopReason = stop_reasons,
-    stopReasons = stopReason,
-    stopped = stopReasons
-  } = response;
+  // Append assistant reply so response.conversation is the complete exchange.
+  conversation.push(new Turn("assistant", text));
 
-  // Return response.
-  return {
-    params: { ...modelParams, pricing },
-    input: {
-      config,
-      messages,
-      numBytes,
-      contentLength
+  return new Response({
+    config:       safeConfig,
+    input:        content,
+    conversation,
+    output: {
+      success: true,
+      text,
+      stopped: apiResponse.stop_reason || false,
     },
-    output: { success: true, text, stopped: stopped || false },
-    stats: {
+    stats: new StatsItem({
       duration,
-      inputTokens: response.usage.input_tokens || 0,
-      outputTokens: response.usage.output_tokens || 0,
-      cache: cacheEnabled,
-      ...cacheStats
-    }
-  };
+      inputTokens:  apiResponse.usage.input_tokens  || 0,
+      outputTokens: apiResponse.usage.output_tokens || 0,
+      cache:        content.cacheEnabled,
+      ...cacheStats,
+      pricing,
+    }),
+  });
 };
 
 /**
  * @ignore
- * Default export with freezing.
  */
 module.exports = Object.freeze(Object.defineProperty(run, "run", {
   value: run
