@@ -62,11 +62,15 @@ const makeConfig = (overrides = {}) => ({
   ...overrides,
 });
 
+let consoleErrorSpy;
+
 beforeEach(() => {
+  consoleErrorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
   mockCreate.mockResolvedValue(makeMockApiResponse());
 });
 
 afterEach(() => {
+  consoleErrorSpy.mockRestore();
   jest.clearAllMocks();
 });
 

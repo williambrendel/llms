@@ -42,6 +42,7 @@ const toStats = stats =>
  * 4. `stats.toString()` — token usage, cache outcome, itemized cost.
  *
  * @param {Object}                   data
+ * @param {string}                   [data.id]         - Optional request identifier (e.g. batch custom_id).
  * @param {Config}                   data.config       - Safe (apiKey-free) resolved config.
  * @param {Conversation}             data.conversation - Full conversation including
  *   the assistant reply appended by `run()`.
@@ -53,6 +54,7 @@ const toStats = stats =>
  * @param {StatsItem|Stats|Object|Array} data.stats    - Usage statistics. Plain objects
  *   are wrapped in `StatsItem`; arrays are wrapped in `Stats`.
  *
+ * @property {string}          [id]
  * @property {Config}          config
  * @property {Conversation}    conversation
  * @property {Object}          output
@@ -75,10 +77,11 @@ const toStats = stats =>
  * console.log(String(stats));
  */
 class Response {
-  constructor({ config, input, conversation, output, stats }) {
+  constructor({ id, config, input, conversation, output, stats }) {
     for (let i = conversation.length - 1; i >= 0 && !input; --i) {
       conversation[i].role === "user" && (input = conversation[i].content);
     }
+    id !== undefined && (this.id = id);
     this.config       = config;
     this.conversation = conversation;
     this.stats        = toStats(stats);

@@ -2,8 +2,9 @@
 
 const math = require("./math");
 const object = require("./object");
-const { correctQuery, createSpellingEngine } = require("./correctQuery");
 const getMediaType = require("./getMediaType");
+const parseResponseJson = require("./parseResponseJson");
+const spinner = require("./spinner");
 
 /**
  * @ignore
@@ -16,8 +17,8 @@ module.exports = Object.freeze({
   // Object utilities.
   ...object,
 
-  // Spell checking utilities.
-  correctQuery,
-  createSpellingEngine,
+  // Other.
   getMediaType,
+  parseResponseJson,
+  spinner,
 });
