@@ -342,7 +342,6 @@ describe("segmentText — return shape", () => {
 
   test("each element is a two-element array", () => {
     for (const seg of segmentText("a. b. c")) {
-      expect(Array.isArray(seg)).toBe(true);
       expect(seg).toHaveLength(2);
     }
   });
@@ -500,7 +499,6 @@ describe("segmentTextSection — return shape", () => {
   test("each entry within a section is a two-element array", () => {
     for (const section of segmentTextSection("a. b\n\nc. d")) {
       for (const seg of section) {
-        expect(Array.isArray(seg)).toBe(true);
         expect(seg).toHaveLength(2);
       }
     }

@@ -7,6 +7,73 @@
  */
 
 /**
+ * @class Segment
+ * @extends Uint32Array
+ * @description A specialized 2-element array representing a text range [start, end].
+ *
+ * Uses a fixed-size `Uint32Array(2)` for high performance and low memory 
+ * footprint during large-scale text processing. The constructor is polymorphic,
+ * accepting either two numeric indices or a single array-like object.
+ */
+class Segment extends Uint32Array {
+  /**
+   * @constructor
+   * @param {number|Array|Uint32Array|Uint16Array} start - The inclusive start index, 
+   * or an array-like object containing [start, end].
+   * @param {number} [end] - The exclusive end index. Ignored if the first 
+   * argument is an array-like object.
+   */
+  constructor(start, end) {
+    // 1. Explicitly allocate exactly 2 slots
+    super(2); 
+    
+    // 2. Assign the values manually
+    typeof start === "object" && (
+      Array.isArray(start) || (start instanceof Uint32Array) || (start instanceof Uint16Array)
+    ) && (
+      end = start[1],
+      start = start[0]
+    );
+    typeof start === "number" && (this[0] = Math.max(start, 0));
+    typeof end === "number" && (this[1] = Math.max(end, 0));
+  }
+
+  /** @property {number} start - The inclusive start offset of the segment. */
+  get start() { return this[0]; }
+  /** @property {number} end - The exclusive end offset of the segment. */
+  get end() { return this[1]; }
+
+  /**
+   * @method toJSON
+   * @description Ensures the segment serializes as a standard Array [start, end].
+   * This is required because Uint32Array serializes as an object by default.
+   * @returns {number[]}
+   */
+  toJSON() {
+    return Array.from(this); // Converts to [start, end] for JSON
+  }
+}
+
+/**
+ * @class Section
+ * @extends Array
+ * @description A collection of {@link Segment} instances representing a logical paragraph.
+ *
+ * Provides convenience getters to determine the total character span of 
+ * the paragraph based on the first and last segments in the collection.
+ */
+class Section extends Array {
+  constructor(...args) {
+    super(...args);
+  }
+
+  /** @property {number|undefined} start - The start offset of the first segment. */
+  get start() { return (this[0] || [])[0]; }
+  /** @property {number|undefined} end - The end offset of the final segment. */
+  get end() { return (this[this.length - 1] || [])[1]; }
+}
+
+/**
  * @function segmentText
  * @description Splits text into sentence-level `[start, end]` index pairs.
  * Delimiters are `.`, `!`, `?`, `;`, and whitespace control characters
@@ -112,7 +179,7 @@ const segmentText = text => {
     while (j >= p && ((c = text.charCodeAt(j)) < 14 && c > 8 || c === 32)) --j;
     if (++j > p) {
       // Count new lines and special delimiters in gap to decide merge vs split.
-      if (!m) (segments[m++] = [p, j]);
+      if (!m) (segments[m++] = new Segment(p, j));
       else {
         const prev = segments[m - 1];
         dl = nl = 0;
@@ -120,7 +187,7 @@ const segmentText = text => {
           nl += (c = text.charCodeAt(ii)) === 10; // count newlines
           dl  += c > 32;                            // detect sentence delimiter in gap
         }
-        (nl > 1 || dl) && (segments[m++] = [p, j]) || (prev[1] = j);
+        (nl > 1 || dl) && (segments[m++] = new Segment(p, j)) || (prev[1] = j);
       }
     }
 
@@ -131,7 +198,7 @@ const segmentText = text => {
 
   // Capture final segment after last delimiter.
   if (e > p) {
-    if (!m) (segments[m++] = [p, e]);
+    if (!m) (segments[m++] = new Segment(p, e));
     else {
       const prev = segments[m - 1];
       let dl = nl = 0;
@@ -139,7 +206,7 @@ const segmentText = text => {
         nl += (c = text.charCodeAt(ii)) === 10; // count newlines
         dl  += c > 32;                            // detect sentence delimiter in gap
       }
-      (nl > 1 || dl) && (segments[m++] = [p, e]) || (prev[1] = e);
+      (nl > 1 || dl) && (segments[m++] = new Segment(p, e)) || (prev[1] = e);
     }
   }
 
@@ -199,7 +266,7 @@ const segmentTextSection = text => {
   if (!segments.length) return [];
 
   const sections = [];
-  let current = [segments[0]];
+  let current = new Section(segments[0]);
 
   for (let i = 1; i < segments.length; i++) {
     const prevEnd   = segments[i - 1][1];
@@ -211,7 +278,7 @@ const segmentTextSection = text => {
     for (let j = prevEnd; j < nextStart && newlines < 2; j++)
       text.charCodeAt(j) === 10 && ++newlines;
 
-    if (newlines >= 2) { sections.push(current); current = []; }
+    if (newlines >= 2) { sections.push(current); current = new Section(); }
     current.push(segments[i]);
   }
 
