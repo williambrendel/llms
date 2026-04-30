@@ -72,7 +72,7 @@ const synthesize = async (
     synthesizer,
     text2textModel,
     ...other
-  }
+  } = {}
 ) => {
   // Init question text2text engine if needed.
   synthesizer || (
@@ -101,6 +101,66 @@ const synthesize = async (
 const createSynthesizer = synthesize.createSynthesizer = async text2textModel => (
   await pipeline("text2text-generation", text2textModel || CONFIG.text2textModel)
 );
+
+/**
+ * @function synthesize.batch
+ * @async
+ * @description
+ * Batched variant of {@link synthesize}. Accepts an array of prompt strings
+ * and processes them in a single forward pass, which is significantly faster
+ * than N individual calls since the model only loads weights and sets up the
+ * computation graph once per batch.
+ *
+ * @param {string[]} prompts - Array of prompt strings to process.
+ * @param {Object}   options - Same options as {@link synthesize}.
+ * @returns {Promise<string[]>} Array of generated text strings, one per prompt,
+ *   in the same order as the input.
+ *
+ * @example
+ * const results = await synthesize.batch(
+ *   segments.map(s => `extract topics: ${s}`),
+ *   { synthesizer, max_new_tokens: 32 }
+ * );
+ */
+synthesize.batch = async (
+  prompts,
+  {
+    min_length = 0,
+    max_length = 200,
+    max_new_tokens = max_length,
+    temperature = 0.3,
+    do_sample = true,
+    repetition_penalty = 1.2,
+    length_penalty = 1,
+    num_beams = 5,
+    no_repeat_ngram_size = 3,
+    early_stopping = true,
+    stopping_criteria = null,
+    synthesizer,
+    text2textModel,
+    ...other
+  } = {}
+) => {
+  synthesizer || (
+    synthesizer = model || (model = await createSynthesizer(text2textModel))
+  );
+  const results = await synthesizer(prompts, {
+    min_length,
+    max_length: max_new_tokens,
+    max_new_tokens,
+    temperature,
+    do_sample,
+    repetition_penalty,
+    length_penalty,
+    num_beams,
+    no_repeat_ngram_size,
+    early_stopping,
+    stopping_criteria,
+    ...other
+  });
+  // Pipeline returns [[{generated_text}], [{generated_text}], ...] for batch input.
+  return results.map(r => (Array.isArray(r) ? r[0] : r).generated_text);
+};
 
 /**
  * @ignore

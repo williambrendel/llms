@@ -99,6 +99,45 @@ const createQuestionAnswering = answer.createQuestionAnswering = async questionA
 );
 
 /**
+ * @function answer.batch
+ * @async
+ * @description
+ * Batched variant of {@link answer}. Accepts an array of `{question, context}`
+ * pairs and processes them in a single forward pass.
+ *
+ * @param {Array<{question: string, context: string}>} pairs
+ *   Array of question/context pairs to process.
+ * @param {Object} options - Same options as {@link answer}.
+ * @returns {Promise<Array<{answer, score, start, end}>>} Results in input order.
+ *
+ * @example
+ * const results = await answer.batch(
+ *   segments.map(s => ({ question: "What is the main topic?", context: s })),
+ *   { questionAnswering }
+ * );
+ */
+answer.batch = async (
+  pairs,
+  {
+    questionAnswering,
+    questionAnsweringModel,
+    topk,
+    ...other
+  } = {}
+) => {
+  questionAnswering || (
+    questionAnswering = model || (model = await createQuestionAnswering(questionAnsweringModel))
+  );
+  const inputs = pairs.map(({ question, context }) => ({
+    question: question.normalize("NFC").trim(),
+    context:  context.normalize("NFC").trim(),
+  }));
+  const results = await questionAnswering(inputs, { topk, ...other });
+  // Pipeline returns an array of result objects for batch input.
+  return Array.isArray(results[0]) ? results.map(r => r[0]) : results;
+};
+
+/**
  * @ignore
  * Default export with freezing.
  */

@@ -96,6 +96,52 @@ const createSummarizer = summarize.createSummarizer = async summarizationModel =
 );
 
 /**
+ * @function summarize.batch
+ * @async
+ * @description
+ * Batched variant of {@link summarize}. Accepts an array of text strings and
+ * processes them in a single forward pass for significantly better throughput
+ * than N sequential calls.
+ *
+ * @param {string[]} texts   - Array of source texts to summarize.
+ * @param {Object}   options - Same options as {@link summarize}.
+ * @returns {Promise<string[]>} Array of summary strings in input order.
+ *
+ * @example
+ * const summaries = await summarize.batch(segmentTexts, {
+ *   summarizer,
+ *   min_length: 3,
+ *   max_length: 8,
+ *   length_penalty: -1.0,
+ * });
+ */
+summarize.batch = async (
+  texts,
+  {
+    max_length = 200,
+    max_new_tokens = max_length,
+    min_length = 20,
+    do_sample = false,
+    summarizer,
+    summarizationModel,
+    ...other
+  } = {}
+) => {
+  summarizer || (
+    summarizer = model || (model = await createSummarizer(summarizationModel))
+  );
+  const results = await summarizer(texts, {
+    max_length: max_new_tokens,
+    max_new_tokens,
+    min_length,
+    do_sample,
+    ...other
+  });
+  // Pipeline returns [[{summary_text}], [{summary_text}], ...] for batch input.
+  return results.map(r => (Array.isArray(r) ? r[0] : r).summary_text);
+};
+
+/**
  * @ignore
  * Default export with freezing.
  */
