@@ -18,8 +18,8 @@
  * for duck-typed header detection.
  */
 
-const Header  = require("../../../src/xenova/textSegmentation/Header");
-const Segment = require("../../../src/xenova/textSegmentation/Segment");
+const Header  = require("../../../src/utilities/textSegmentation/Header");
+const Segment = require("../../../src/utilities/textSegmentation/Segment");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Class shape

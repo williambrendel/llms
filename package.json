@@ -24,7 +24,8 @@
     "@xenova/transformers": "^2.17.2",
     "dictionary-en": "^4.0.0",
     "dotenv": "^16.4.5",
-    "nspell": "^2.1.5"
+    "nspell": "^2.1.5",
+    "markitdown-ts": "^0.0.8"
   },
   "devDependencies": {
     "@eslint/create-config": "latest",

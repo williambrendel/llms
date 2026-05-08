@@ -10,7 +10,7 @@
  */
 "use strict";
 
-const { protectDots, restore } = require("../../../src/xenova/textSegmentation/protectDots");
+const { protectDots, restore } = require("../../../src/utilities/textSegmentation/protectDots");
 
 /**
  * Helper: runs protectDots, then verifies that restoring the protected text

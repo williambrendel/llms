@@ -71,6 +71,16 @@ class Header extends Segment {
     return [this[0], this[1]];
   }
 
+  /**
+   * @method toString
+   * @description Serializes the segment as a plain `[start, end]` string.
+   * 
+   * @returns {number[]}
+   */
+  toString() {
+    return `Header [${this.start}, ${this.end}]`;
+  }
+
   extractTitle(text) { 
     return text.slice(this.start + this.#titleOffset, this.end).replace(TRIM_HEADING_RE, "");
   }

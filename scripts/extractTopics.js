@@ -56,8 +56,8 @@
 const fs   = require("fs");
 const path = require("path");
 
-const segmentTextSections         = require("../src/xenova/textSegmentation/segmentTextSections");
-const segmentMarkdownTextSections = require("../src/xenova/textSegmentation/segmentMarkdownTextSections");
+const segmentTextSections         = require("../src/utilities/textSegmentation/segmentTextSections");
+const segmentMarkdownTextSections = require("../src/utilities/textSegmentation/segmentMarkdownTextSections");
 const synthesize                  = require("../src/xenova/synthesize");
 
 // ─────────────────────────────────────────────────────────────────────────────

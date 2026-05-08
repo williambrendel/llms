@@ -85,6 +85,16 @@ class Segment extends Uint32Array {
   }
 
   /**
+   * @method toString
+   * @description Serializes the segment as a plain `[start, end]` string.
+   * 
+   * @returns {number[]}
+   */
+  toString() {
+    return `Segment [${this.start}, ${this.end}]`;
+  }
+
+  /**
    * @method getIntersection
    * @description Returns the overlapping range between this segment and another,
    * or `null` if they do not overlap. Touching ranges return `null`.
@@ -128,6 +138,8 @@ class Segment extends Uint32Array {
     return contains(this, interval(...input));
   }
 }
+
+Segment.isSegment = true;
 
 /**
  * @function Segment.create

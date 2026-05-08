@@ -16,8 +16,8 @@
  * interval.contains(big, small) → boolean
  */
 
-const interval = require("../../../src/xenova/textSegmentation/interval");
-const Segment  = require("../../../src/xenova/textSegmentation/Segment");
+const interval = require("../../../src/utilities/textSegmentation/interval");
+const Segment  = require("../../../src/utilities/textSegmentation/Segment");
 const { intersect, intersects, contains } = interval;
 
 // ─────────────────────────────────────────────────────────────────────────────

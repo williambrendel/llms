@@ -23,10 +23,10 @@
  * Section.interval re-exports the interval utility.
  */
 
-const Section = require("../../../src/xenova/textSegmentation/Section");
-const Segment = require("../../../src/xenova/textSegmentation/Segment");
-const Header  = require("../../../src/xenova/textSegmentation/Header");
-const interval = require("../../../src/xenova/textSegmentation/interval");
+const Section = require("../../../src/utilities/textSegmentation/Section");
+const Segment = require("../../../src/utilities/textSegmentation/Segment");
+const Header  = require("../../../src/utilities/textSegmentation/Header");
+const interval = require("../../../src/utilities/textSegmentation/interval");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Construction
@@ -220,12 +220,11 @@ describe("Section — .content", () => {
     expect(s.content.end).toBeUndefined();
   });
 
-  test(".content is a plain Array (not a Section)", () => {
+  test(".content is a section", () => {
     const s = new Section();
     s.push(new Segment(0, 5));
     expect(Array.isArray(s.content)).toBe(true);
-    // Plain array is not a Section (Section extends Array but adds methods)
-    expect(s.content).not.toBeInstanceOf(Section);
+    expect(s.content).toBeInstanceOf(Section);
   });
 });
 
