@@ -57,7 +57,7 @@ const batch = async (config, ...requests) => {
   const safeConfig = config.safe;
 
   // Strip non-API props before sending — mirrors run.js.
-  const { pollInterval = 5000, onPoll, pricing, ...modelParams } = safeConfig;
+  const { pollInterval = 5000, onPoll, pricing, maxRetries, ...modelParams } = safeConfig;
 
   if (!apiKey) {
     const error = "ANTHROPIC_API_KEY not set — create a .env file with: ANTHROPIC_API_KEY=your_key";
@@ -65,7 +65,7 @@ const batch = async (config, ...requests) => {
     throw new Error(error);
   }
 
-  const client = new Anthropic({ apiKey });
+  const client = new Anthropic({ apiKey, maxRetries });
 
   // Build Content and Conversation per request — preserve original order
   const prepared = requests.map(({ id, prompt, documents = [] }) => {

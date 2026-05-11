@@ -1,14 +1,12 @@
 const fs   = require("fs").promises;
 const path = require("path");
+const {subsegmentText} = require("../src/utilities/textSegmentation/segmentText");
 const segmentTextSections = require("../src/utilities/textSegmentation/segmentTextSections");
 const getFilenames = require("./io/getFilenames");
 const loadFile = require("./io/loadFile");
+const representativeSpans = require("../src/utilities/math/representativeSpans");
+const { dotProductUnsafe } = require("../src/utilities/math/dotProduct");
 const vectorize = require("../src/xenova/vectorize");
-const llm = require("../src/claude").sonnet45;
-// NOTE: ensure the Anthropic client in src/claude is instantiated with a higher
-// maxRetries than the default of 2 — e.g. `new Anthropic({ maxRetries: 5 })`.
-// That alone covers most transient 5xx / 429 / network failures without any
-// wrapper here.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CLI args
@@ -17,112 +15,138 @@ const llm = require("../src/claude").sonnet45;
 const args = process.argv.slice(2);
 const filenames = getFilenames(args[0]);
 const outputDir = args[1];
-const promptFilename = args[2] || "scripts/prompts/facts-database-prompt.ppl";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Concurrency limiter
-//
-// Returns a function that accepts an async thunk and runs it under the
-// concurrency cap. FIFO queueing; rejections are propagated to the caller
-// without affecting the queue.
+// Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-const makeLimit = (concurrency) => {
-  let active = 0;
-  const queue = [];
-  const next = () => {
-    if (active >= concurrency || queue.length === 0) return;
-    ++active;
-    const { fn, resolve, reject } = queue.shift();
-    fn().then(resolve, reject).finally(() => { --active; next(); });
-  };
-  return (fn) => new Promise((resolve, reject) => {
-    queue.push({ fn, resolve, reject });
-    next();
-  });
+const buildContainmentMask = (segments, tier) => {
+  const N = segments.length;
+  const mask = new Set();
+  for (let i = 0; i < N; ++i) {
+    const a = segments[i];
+    if (a.tier < tier) continue;
+    for (let j = i + 1; j < N; ++j) {
+      const b = segments[j];
+      if (b.tier < tier) continue;
+      if (a.start === b.start || a.end === b.end) {
+        mask.add(i * N + j);
+        mask.add(j * N + i);
+      }
+    }
+  }
+  return mask;
 };
 
-// Tune as needed; 4 is a safe default that stays under most rate limits and
-// limits the blast radius of a single failure.
-const llmLimit = makeLimit(4);
+const buildContainmentEdge = (mask, N) => {
+  return (c, i, j, kappa) => mask.has(i * N + j) ? -kappa : Math.max(0, 1 - c);
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Process file
 // ─────────────────────────────────────────────────────────────────────────────
 
-const processFile = async (data, prompt) => {
+const processFile = async (data) => {
   if (!data) throw Error(`Missing input data`);
 
   // 1. Extract sections.
   const sections = segmentTextSections(data).contentSections();
 
   // 2. Process each section.
-  const output = [], responsePromises = [];
+  const output = [];
   for (let i = 0, l = sections.length, section; i !== l; ++i) {
     section = sections[i];
     const range = [section.paragraph > 0 ? section.start : (section.header?.[0] ?? section.start), section.end];
     const ancestors = (section.ancestors || []).map(h => h.extractTitle(data));
     const header = section.header && section.header.extractTitle(data) || "";
-    const sentences = section.content;
-    const content = sentences.extract(data);
+    const content = section.content.extract(data);
 
-    // Derive the text to vectorize from the content itself.
-    const vecPromises = [];
-    const breadcrumbs = [...ancestors, header].filter(Boolean);
-    const h = breadcrumbs.join(", ");
-    h && vecPromises.push(vectorize(h));
-    content && vecPromises.push(vectorize(content));
-    for (const sentence of sentences) vecPromises.push(vectorize(sentence.extract(data)));
+    // Derive the text to vectorize.
+    const h = [...ancestors, header].filter(Boolean).join(", ");
+    const str = `${h ? h + "\n\n" : ""}${content}`;
+    const suball = subsegmentText(section, data, { includeOriginalSegment: true });
+    const sentences = suball.filter(s => s.tier === 0);
+    const tierAbove = suball.filter(s => s.tier > 0);
 
-    // Derive questions — wrapped in the concurrency limiter.
-    const hh = breadcrumbs.join(" > ");
-    responsePromises.push(
-      llmLimit(() => llm.run(prompt, `${hh && "section header breadcrumbs: " + hh + "\n\nsection content:\n" || ""}${content}`))
-    );
+    // Build gate mask using start/end on Segments (before extraction)
+    const mask = buildContainmentMask(tierAbove, 2);
 
-    output.push({
-      range,
-      vecs: vecPromises
+    const tierAboveText = tierAbove.map(s => s.extractTitle ? s.extractTitle(data) : s.extract(data));
+    const vecs = await Promise.all([...tierAboveText, str].map(x => vectorize(x)));
+    const ref = vecs.pop();
+    const N = vecs.length;
+    const D = ref.length;                    // 384 for MiniLM-L6
+    const V = new Float32Array(N * D), rel = new Float32Array(N);
+    for (let i = 0, offset = 0, v; i !== N; ++i, offset += D) {
+      // Copy vec[i] into V[i*D .. (i+1)*D)
+      V.set(v = vecs[i], offset);
+      // Build relevance.
+      rel[i] = 2 * dotProductUnsafe(v, ref, D, 0, 0);
+    }
+
+    // Adaptive beta.
+    const beta = tierAboveText.map(s => {
+      const words = s.split(/\s+/).filter(Boolean).length;
+      return Math.max(0.5, Math.min(2.0, 0.5 + words * 0.07));
     });
-  }
 
-  // allSettled so one failed section doesn't lose the rest of the file.
-  const settled = await Promise.allSettled(responsePromises);
+    const containmentEdge = buildContainmentEdge(mask, N);
 
-  for (let i = 0, l = settled.length, result; i !== l; ++i) {
-    result = settled[i];
+    const { support, alpha, kept } = representativeSpans(V, rel, {
+      dim: D,
+      computeRelevance: false,
+      edge: containmentEdge,
+      beta,
+      adaptive: "entropy"
+    });
 
-    if (result.status === "rejected") {
-      console.error(`🚨  Section ${i} LLM call failed:`, result.reason?.message || result.reason);
-      continue;
+    // Keep only Pass-3 (tier > 1) survivors. Pass-2 sub-clauses acted as
+    // competitive ballast in the solve and are filtered out of the final output.
+    const res = support.reduce((out, offset) => (
+      tierAbove[offset / D].tier > 1 && out.push(offset),
+      out
+    ), []);
+
+    /////// DEBUG /////
+    console.log(`\n${"─".repeat(70)}`);
+    console.log(`Section: ${[...ancestors, header].filter(Boolean).join(" > ")}`);
+    console.log(`Range: [${range[0]}, ${range[1]}] | ${tierAbove.length} candidates → ${res.length} kept`);
+    console.log(`Sentences: ${sentences.length}`);
+    console.log(`Surviving spans:`);
+    res.forEach(offset => {
+      console.log(`  - ${tierAboveText[offset / D]}`);
+    });
+
+    // Top 8 by α (across all candidates, before tier filter)
+    const topK = Array.from({length: alpha.length}, (_, i) => i)
+      .sort((a, b) => alpha[b] - alpha[a])
+      .slice(0, 8);
+    console.log(`Top alpha:`);
+    topK.forEach(i => {
+      const origIdx = kept[i] / D;
+      const tierTag = tierAbove[origIdx].tier > 1 ? "P3" : "P2";
+      console.log(`  α=${alpha[i].toFixed(4)} [${tierTag}] ${tierAboveText[origIdx].slice(0, 70)}`);
+    });
+    /////////////////
+
+    // Collect section vectors: [breadcrumb, content, ...sentences, ...spans]
+    const Vtmp = await Promise.all(sentences.reduce((out, s) => (
+      out.push(vectorize(s.extractTitle ? s.extractTitle(data) : s.extract(data))),
+      out
+    ), [vectorize(h), vectorize(content)]));
+
+    // Append surviving span vectors (zero-copy subarrays into V).
+    for (let i = 0, l = res.length; i !== l; ++i) {
+      Vtmp.push(V.subarray(res[i], res[i] + D));
     }
 
-    const response = result.value;
-
-    try {
-      const rows = response.output.json();
-      if (!Array.isArray(rows)) {
-        console.warn(`Section ${i}: response.output.json() did not return an array, skipping`);
-        continue;
-      }
-
-      for (let r = 0, m = rows.length; r !== m; ++r) {
-        const row = rows[r];
-        if (!row || typeof row.question !== "string" || !row.question) {
-          console.warn(`Section ${i}, row ${r}: missing or empty question, skipping`);
-          continue;
-        }
-
-        const { question, anchors, variants } = row;
-        output[i].vecs.push(vectorize(question));
-        output[i].vecs.push(...(anchors || []).map(x => vectorize(x)));
-        output[i].vecs.push(...(variants || []).map(x => vectorize(x)));
-      }
-
-      console.log("\n\n", data.slice(...output[i].range), rows);
-    } catch (error) {
-      console.error(`🚨  Section ${i} row processing failed:`, error);
+    // Concatenate into a single Float32Array for this section.
+    const len = Vtmp.length * D, Vout = new Float32Array(len);
+    for (let offset = 0, i = 0; offset !== len; offset += D, ++i) {
+      Vout.set(Vtmp[i], offset);
     }
+
+    output.push({ range, V: Vout });
   }
 
   return output;
@@ -150,10 +174,8 @@ const processFile = async (data, prompt) => {
  *   Index buffer: numSections × indexDim Uint32  (start, end, vecCount per section)
  *   Vec buffer:   totalVecs   × vecDim   Float32 (sections concatenated in order)
  *
- * @param {string}        filename
- * @param {Array<{range: [number, number], vecs: Float32Array[]}>} sections
- * @param {number}        dim
- * @param {string}        outputDir
+ * No padding required: header is 32 bytes (4-aligned), Uint32 index is naturally
+ * 4-aligned, Float32 vec follows at a 4-aligned boundary.
  */
 const writeKnowledgeBase = async (filename, sections, dim, outputDir) => {
   const numSections = sections.length;
@@ -161,24 +183,22 @@ const writeKnowledgeBase = async (filename, sections, dim, outputDir) => {
 
   // Compute total vector count.
   let totalVecs = 0;
-  for (let i = 0; i !== numSections; ++i) totalVecs += sections[i].vecs.length;
+  for (let i = 0; i !== numSections; ++i) totalVecs += sections[i].V.length / dim;
 
   // Index buffer: (start, end, vecCount) per section, all Uint32.
   const indexBuffer = new Uint32Array(numSections * indexDim);
   for (let i = 0; i !== numSections; ++i) {
-    const { range, vecs } = sections[i];
+    const { range, V } = sections[i];
     indexBuffer[i * indexDim    ] = range[0];
     indexBuffer[i * indexDim + 1] = range[1];
-    indexBuffer[i * indexDim + 2] = vecs.length;
+    indexBuffer[i * indexDim + 2] = V.length / dim;
   }
 
   // Vec buffer: all section vectors concatenated.
   const vecBuffer = new Float32Array(totalVecs * dim);
   for (let i = 0, offset = 0; i !== numSections; ++i) {
-    const vecs = sections[i].vecs;
-    for (let j = 0, l = vecs.length; j !== l; ++j, offset += dim) {
-      vecBuffer.set(vecs[j], offset);
-    }
+    vecBuffer.set(sections[i].V, offset);
+    offset += sections[i].V.length;
   }
 
   // Header.
@@ -212,37 +232,17 @@ const writeKnowledgeBase = async (filename, sections, dim, outputDir) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const main = async () => {
-  // 1. Load prompt
-  const prompt = await fs.readFile(promptFilename, "utf-8");
-
-  // 2. Initialize feature extraction model and probe embedding dimension.
+  // 1. Initialize feature extraction model and probe embedding dimension.
   const probe = await vectorize("probe");
   const dim = probe.length;
   console.log(`Embedding dimension: ${dim}`);
 
-  // 3. Process each file → write its own binary.
-  // allSettled so one failed file doesn't lose the rest of the run.
-  const results = await Promise.allSettled(filenames.map(async filename => {
+  // 2. Process each file → write its own binary.
+  await Promise.all(filenames.map(async filename => {
     const { data } = await loadFile(filename);
-    const sections = await processFile(data, prompt);
+    const sections = await processFile(data);
     await writeKnowledgeBase(filename, sections, dim, outputDir);
-    return filename;
   }));
-
-  // Summary.
-  let succeeded = 0, failed = 0;
-  for (const r of results) {
-    if (r.status === "fulfilled") {
-      ++succeeded;
-    } else {
-      ++failed;
-      console.error(`🚨  File failed:`, r.reason?.message || r.reason);
-    }
-  }
-  console.log(`Build complete: ${succeeded} succeeded, ${failed} failed`);
-
-  // Exit non-zero if any file failed, so CI/parent processes can detect it.
-  if (failed > 0) process.exitCode = 1;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

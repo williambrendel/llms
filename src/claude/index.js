@@ -15,6 +15,16 @@ const run = async (config, prompt, ...documents) => await _run(config, prompt, .
 // Add batch to the export.
 run.batch = batch;
 
+// Factory function to create model specific runs.
+const specialize = config => {
+  const f = async (prompt, ...documents) => await run(config, prompt, ...documents);
+  Object.defineProperty(f, "run", {
+    value: f
+  });
+  f.batch = async (...requests) => await batch(config, ...requests);
+  return Object.freeze(f);
+}
+
 // --- Opus 4 ---
 
 /**
@@ -26,7 +36,6 @@ run.batch = batch;
  * @param {...(string|Object|Array)} documents - Variadic list of documents to append.
  * @returns {Promise<Object>} See {@link run} for return structure details.
  */
-run.opus4 = async (prompt, ...documents) => await run(OPUS4_CONFIG, prompt, ...documents);
 
 /**
  * @function run.opus4.batch
@@ -36,7 +45,7 @@ run.opus4 = async (prompt, ...documents) => await run(OPUS4_CONFIG, prompt, ...d
  * @param {...(Object|Array)} requests - See {@link batch} for request structure.
  * @returns {Promise<Object>} See {@link batch} for return structure details.
  */
-run.opus4.batch = async (...requests) => await batch(OPUS4_CONFIG, ...requests);
+run.opus4 = specialize(OPUS4_CONFIG);
 
 // --- Sonnet 4.5 ---
 
@@ -49,7 +58,6 @@ run.opus4.batch = async (...requests) => await batch(OPUS4_CONFIG, ...requests);
  * @param {...(string|Object|Array)} documents - Variadic list of documents to append.
  * @returns {Promise<Object>} See {@link run} for return structure details.
  */
-run.sonnet45 = async (prompt, ...documents) => await run(SONNET45_CONFIG, prompt, ...documents);
 
 /**
  * @function run.sonnet45.batch
@@ -59,7 +67,7 @@ run.sonnet45 = async (prompt, ...documents) => await run(SONNET45_CONFIG, prompt
  * @param {...(Object|Array)} requests - See {@link batch} for request structure.
  * @returns {Promise<Object>} See {@link batch} for return structure details.
  */
-run.sonnet45.batch = async (...requests) => await batch(SONNET45_CONFIG, ...requests);
+run.sonnet45 = specialize(SONNET45_CONFIG);
 
 // --- Sonnet 4.6 ---
 
@@ -72,7 +80,6 @@ run.sonnet45.batch = async (...requests) => await batch(SONNET45_CONFIG, ...requ
  * @param {...(string|Object|Array)} documents - Variadic list of documents to append.
  * @returns {Promise<Object>} See {@link run} for return structure details.
  */
-run.sonnet46 = async (prompt, ...documents) => await run(SONNET46_CONFIG, prompt, ...documents);
 
 /**
  * @function run.sonnet46.batch
@@ -82,7 +89,7 @@ run.sonnet46 = async (prompt, ...documents) => await run(SONNET46_CONFIG, prompt
  * @param {...(Object|Array)} requests - See {@link batch} for request structure.
  * @returns {Promise<Object>} See {@link batch} for return structure details.
  */
-run.sonnet46.batch = async (...requests) => await batch(SONNET46_CONFIG, ...requests);
+run.sonnet46 = specialize(SONNET46_CONFIG);
 
 // --- Haiku 4.5 ---
 
@@ -95,7 +102,6 @@ run.sonnet46.batch = async (...requests) => await batch(SONNET46_CONFIG, ...requ
  * @param {...(string|Object|Array)} documents - Variadic list of documents to append.
  * @returns {Promise<Object>} See {@link run} for return structure details.
  */
-run.haiku45 = async (prompt, ...documents) => await run(HAIKU45_CONFIG, prompt, ...documents);
 
 /**
  * @function run.haiku45.batch
@@ -105,7 +111,7 @@ run.haiku45 = async (prompt, ...documents) => await run(HAIKU45_CONFIG, prompt, 
  * @param {...(Object|Array)} requests - See {@link batch} for request structure.
  * @returns {Promise<Object>} See {@link batch} for return structure details.
  */
-run.haiku45.batch = async (...requests) => await batch(HAIKU45_CONFIG, ...requests);
+run.haiku45 = specialize(HAIKU45_CONFIG);
 
 /**
  * @ignore

@@ -53,6 +53,7 @@ const OPUS4_CONFIG = Object.freeze({
   max_tokens: 16000,
   temperature: 0.5,
   pollInterval: 5000,
+  maxRetries: 5,
   pricing: PRICING["claude-opus-4-20250514"]
 });
 
@@ -77,6 +78,7 @@ const SONNET45_CONFIG = Object.freeze({
   max_tokens: 20000,
   temperature: 0.65,
   pollInterval: 5000,
+  maxRetries: 5,
   pricing: PRICING["claude-sonnet-4-20250514"],
 });
 
@@ -102,6 +104,7 @@ const SONNET46_CONFIG = Object.freeze({
   temperature: 0.5,
   thinking: { type: "disabled" },
   pollInterval: 5000,
+  maxRetries: 5,
   pricing: PRICING["claude-sonnet-4-6"],
 });
 
@@ -127,6 +130,7 @@ const HAIKU45_CONFIG = Object.freeze({
   max_tokens: 32000,
   temperature: 0.3,
   pollInterval: 5000,
+  maxRetries: 5,
   pricing: PRICING["claude-haiku-4-5-20251001"],
 });
 
@@ -175,13 +179,13 @@ const HAIKU45_CONFIG = Object.freeze({
  * @property {Object.<string, Pricing>} PRICING          - Shared pricing table for all models. See {@link PRICING}.
  */
 const DEFAULT_CONFIG = {
-  ...SONNET46_CONFIG,
-  OPUS4_CONFIG,
-  SONNET45_CONFIG,
-  SONNET46_CONFIG,
-  HAIKU45_CONFIG,
-  PRICING,
+  ...SONNET46_CONFIG
 };
+Object.defineProperty(DEFAULT_CONFIG, "OPUS4_CONFIG", { value: OPUS4_CONFIG });
+Object.defineProperty(DEFAULT_CONFIG, "SONNET45_CONFIG", { value: SONNET45_CONFIG });
+Object.defineProperty(DEFAULT_CONFIG, "SONNET46_CONFIG", { value: SONNET46_CONFIG });
+Object.defineProperty(DEFAULT_CONFIG, "HAIKU45_CONFIG", { value: HAIKU45_CONFIG });
+Object.defineProperty(DEFAULT_CONFIG, "PRICING", { value: PRICING });
 
 /**
  * @ignore

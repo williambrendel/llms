@@ -118,10 +118,13 @@ const run = async (config, promptOrConversation, ...documents) => {
     clientConfig.defaultHeaders = { "anthropic-beta": "prompt-caching-2024-07-31" }
   );
 
+  // Strip non-API props before sending — mirrors run.js.
+  const { pollInterval, onPoll, pricing, maxRetries, ...modelParams } = safeConfig;
+  maxRetries && (clientConfig.maxRetries = maxRetries);
+
   const client = new Anthropic(clientConfig);
 
   // Strip non-API props before sending.
-  const { pollInterval, pricing, ...modelParams } = safeConfig;
   modelParams.messages = conversation;
 
   // Call API.

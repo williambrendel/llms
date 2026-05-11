@@ -1,6 +1,8 @@
 "use strict";
 
 const { dotProductUnsafe } = require("./dotProduct");
+const { logRatioGapThreshold } = require("./logRatioGapThreshold");
+const { entropyThreshold } = require("./entropyThreshold");
 
 /**
  * Default anti-similarity kernel: hinged complement of cosine.
@@ -12,86 +14,6 @@ const { dotProductUnsafe } = require("./dotProduct");
 const antiSimilarityHinge = (c) => {
   const a = 1 - c;
   return a > 0 ? a : 0;
-};
-
-/**
- * Compute adaptive support threshold via the log-ratio gap method.
- *
- * Sort α descending, find the largest gap in `log(α_prev / α_curr)` between
- * consecutive values, and cut there if the gap is "meaningful" (≥ minLogGap).
- * Returns the smallest α-value that should be IN the support — anything
- * strictly below this should be cut.
- *
- * @param {Float32Array} alpha
- * @param {number} [minLogGap=Math.log(3)]  Minimum gap to trust as an elbow.
- * @returns {number}  α-threshold (use as supportThreshold lower bound).
- */
-const logRatioGapThreshold = (alpha, minLogGap) => {
-  minLogGap == null && (minLogGap = Math.log(3));
-  const n = alpha.length;
-  if (n === 0) return 0;
-  const sorted = Float32Array.from(alpha);
-  sorted.sort((a, b) => b - a);  // descending
-
-  // Replicator dynamics drives non-support α to extremely small but
-  // non-zero values (e.g. 1e-12, 1e-30). These are mathematical noise
-  // and the gaps within the noise tail can spuriously trigger elbow
-  // detection if not filtered. Treat anything below `eps` as zero.
-  const eps = 1e-10;
-
-  let cutIdx = n;        // default: keep all
-  let maxLogGap = 0;
-  for (let i = 1; i !== n; ++i) {
-    const ap = sorted[i - 1];
-    const ac = sorted[i];
-    // Hitting the noise floor means the rest of the tail is meaningless.
-    // Stop, and only fall back to the noise-floor cut if no real elbow
-    // was found earlier — never overwrite a valid elbow with this.
-    if (ac < eps) { if (cutIdx === n) cutIdx = i; break; }
-    const g = Math.log(ap / ac);
-    if (g > maxLogGap) {
-      maxLogGap = g;
-      if (g >= minLogGap) cutIdx = i;
-    }
-  }
-  // Threshold = α-value just BELOW the cut (so > threshold survives).
-  // If cutIdx === n we keep everything → threshold = 0.
-  return cutIdx < n ? sorted[cutIdx] : 0;
-};
-
-/**
- * Compute adaptive support threshold via entropy-based effective count.
- *
- * Compute Shannon entropy H = −∑ p_i log p_i over normalized α, then
- * keep ⌈exp(H)⌉ candidates by α-value. Returns the smallest α that
- * should be IN the support.
- *
- * @param {Float32Array} alpha
- * @returns {number}  α-threshold (use as supportThreshold lower bound).
- */
-const entropyThreshold = (alpha) => {
-  const n = alpha.length;
-  if (n === 0) return 0;
-
-  // Normalize (alpha is already on the simplex but be safe).
-  let s = 0;
-  for (let i = 0; i !== n; ++i) s += alpha[i];
-  if (!(s > 0)) return 0;
-
-  let H = 0;
-  for (let i = 0; i !== n; ++i) {
-    const p = alpha[i] / s;
-    if (p > 0) H -= p * Math.log(p);
-  }
-  const k = Math.min(n, Math.max(1, Math.ceil(Math.exp(H))));
-
-  const sorted = Float32Array.from(alpha);
-  sorted.sort((a, b) => b - a);  // descending
-
-  // The k-th candidate (1-indexed) should still be in support.
-  // Threshold = the (k+1)-th largest α, i.e. just below the cut.
-  // If k === n, keep everything → threshold = 0.
-  return k < n ? sorted[k] : 0;
 };
 
 /**
@@ -229,9 +151,8 @@ const representativeSpans = (V, v, options) => {
   // Compact filtered candidates into Vf.
   const Vf = new Float32Array(n * dim);
   _beta = new Float32Array(_beta);
-  for (let i = 0; i !== n; ++i) {
-    const srcOff = kept[i];
-    const dstOff = i * dim;
+  for (let i = 0, srcOff, dstOff = 0; i !== n; ++i, dstOff += dim) {
+    srcOff = kept[i];
     for (let d = 0; d !== dim; ++d) Vf[dstOff + d] = V[srcOff + d];
   }
 
@@ -244,18 +165,16 @@ const representativeSpans = (V, v, options) => {
   //    The κ shift is a constant on Δ → argmax preserved.
   // ───────────────────────────────────────────────────────────────────────
   let kappa = _beta[0];
-  for (let i = 1; i !== n; ++i) if (_beta[i] > kappa) kappa = _beta[i];
+  for (let i = 1; i !== n; ++i) kappa = Math.max(kappa, _beta[i]);
 
   const M = new Float32Array(n * n);
   const _kept = kept.map(i => i / dim);
-  for (let i = 0; i !== n; ++i) {
-    const iOff = i * dim;
-    const rOff = i * n;
-    M[rOff + i] = kappa - _beta[i];                          // diagonal
-    for (let j = 0; j !== n; ++j) {
-      if (i === j) continue;
-      const c = dotProductUnsafe(Vf, Vf, dim, iOff, j * dim);
-      M[rOff + j] = edge(c, _kept[i], _kept[j]) + kappa;     // off-diagonal
+  for (let i = 0, iOff = 0, rOff = 0; i !== n; ++i, iOff += dim, rOff += n) {
+    M[rOff + i] = kappa - _beta[i]; // diagonal
+    // M is symetric.
+    for (let j = i + 1, jOff = iOff + dim; j !== n; ++j, jOff += dim) {
+      const c = dotProductUnsafe(Vf, Vf, dim, iOff, jOff);
+      M[rOff + j] = edge(c, _kept[i], _kept[j], kappa) + kappa;     // off-diagonal
     }
   }
 
@@ -271,11 +190,15 @@ const representativeSpans = (V, v, options) => {
 
   let iter = 0;
   for (; iter !== maxIter; ++iter) {
-    for (let i = 0; i !== n; ++i) {
-      const rOff = i * n;
-      let s = 0;
-      for (let j = 0; j !== n; ++j) s += M[rOff + j] * alpha[j];
-      Malpha[i] = s;
+    Malpha.fill(0);
+    for (let i = 0, rOff = 0, s, alpha_i; i !== n; ++i, rOff += n) {
+      alpha_i = alpha[i];
+      Malpha[i] += M[rOff + i] * alpha_i; // diag
+      for (let j = i + 1, m; j !== n; ++j) {
+        m = M[rOff + j];
+        Malpha[i] += m * alpha[j]; // contributes to row i
+        Malpha[j] += m * alpha_i;       // contributes to row j (uses M[i,j] = M[j,i])
+      }
     }
 
     let denom = 0;

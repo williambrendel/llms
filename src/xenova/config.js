@@ -75,7 +75,7 @@
  * @see {@link https://huggingface.co/docs/transformers.js|Transformers.js Documentation}
  */
 const CONFIG = {
-  featureExtractionModel: "Xenova/all-MiniLM-L12-v2", // Feature extraction transformer model for fast retrieval
+  featureExtractionModel: "Xenova/bge-small-en-v1.5", // Feature extraction transformer model for fast retrieval
   questionAnsweringModel: "onnx-community/all-MiniLM-L12-v2-qa-all-ONNX", // Model for fast question answering
   summarizationModel: "Xenova/t5-base", // Model for text summarization
   text2textModel: "Xenova/LaMini-Flan-T5-783M" // Model for text generation

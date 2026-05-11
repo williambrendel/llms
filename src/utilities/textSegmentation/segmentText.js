@@ -602,9 +602,12 @@ const subsegmentText = (input, text, options, output) => {
   // Sub-segment input.
   for (let i = 0, l = input.length, segment; i !== l; ++i) {
     segment = input[i];
-    let res = subsegment(segment, text);
+    let res = subsegment(segment, text), tiers = res.tiers;
     res && res.length > 1 || (res = [segment]);
-    includeOriginalSegment || (res = res.slice(1));
+    includeOriginalSegment || (
+      res = res.slice(1),
+      res.tiers = tiers.map(t => t - 1)
+    );
     output.push(...res);
   }
 
@@ -694,20 +697,31 @@ const subsegmentText = (input, text, options, output) => {
  */
 const subsegment = (segment, text) => {
   const output = [segment], [start, end] = segment;
+  let tier = 0;
+  output.tiers = [];
   let i = start, s = start, c, j, seg, split = false, hasComma;
   for (; i !== end; ++i) {
     c = text.charCodeAt(i);
     if (c === 58 || c === 59) {
       for (j = i; j >= 0 && ((c = text.charCodeAt(j)) === 58 || c === 59 || c < 34); --j);
-      ++j > s && (output.push(new Segment(s, j)), split = true);
+      ++j > s && (
+        output.push(seg = new Segment(s, j)),
+        seg.tier = tier,
+        split = true
+      );
       for (s = i; s !== end && ((c = text.charCodeAt(s)) === 58 || c === 59 || c < 34); ++s);
       i = s - 1;
     }
   }
-  split && s < end && output.push(new Segment(s, end));
+  split && s < end && (
+    output.push(seg = new Segment(s, end)),
+    seg.tier = tier
+  );
 
   // Continue splitting by parenthesis, obvious quote, and additional punctuation and add it to output.
   const n = output.length;
+  output.tiers.push(n);
+  ++tier;
   for (let k = n > 1 && 1 || 0; k !== n; ++k) {
     const [start, end] = output[k];
     i = s = start;
@@ -720,18 +734,28 @@ const subsegment = (segment, text) => {
         for (j = i; j >= 0 && ((c = text.charCodeAt(j)) < 94 && (
           c < 35 || c === 40 || c === 41 || c === 44 || c === 58 || c === 59 || c === 91 || c === 93
         )); --j);
-        ++j > s && (output.push(new Segment(s, j)), split = true);
+        ++j > s && (
+          output.push(seg = new Segment(s, j)),
+          seg.tier = tier,
+          split = true
+        );
         for (s = i; s !== end && ((c = text.charCodeAt(s)) < 94 && (
           c < 35 || c === 40 || c === 41 || c === 44 || c === 58 || c === 59 || c === 91 || c === 93
         )); ++s);
         i = s - 1;
       }
     }
-    split && s < end && output.push(new Segment(s, end));
+    split && s < end && (
+      output.push(seg = new Segment(s, end)),
+      seg.tier = tier
+    );
   }
 
   // spit by words.
-  for (let l = output.length, k = l > n && n || (n > 1 && 1 || 0); k !== l; ++k) {
+  const m = output.length;
+  output.tiers.push(m);
+  ++tier;
+  for (let k = m > n && n || (n > 1 && 1 || 0); k !== m; ++k) {
     const [start, end] = output[k], words = [];
 
     // Extract words.
@@ -744,6 +768,7 @@ const subsegment = (segment, text) => {
         ++j > s && (
           words.push(seg = new Segment(s, j)),
           hasComma && (seg.precededByDelimiter = true),
+          seg.tier = tier,
           stopWords.has(text.slice(s, j).toLowerCase()) || (seg.notAStopWord = true)
         );
         hasComma = false;
@@ -754,12 +779,13 @@ const subsegment = (segment, text) => {
     s < end && (
       words.push(seg = new Segment(s, end)),
       hasComma && (seg.precededByDelimiter = true),
+      seg.tier = tier,
       stopWords.has(text.slice(s, end).toLowerCase()) || (seg.notAStopWord = true)
     );
 
     // For each new split:
     // extract words of size > 4 and add it to output.
-    // extract overlapping pairs and triplets and add it to output.
+    // extract overlapping pairs and triplets and quadruplets and add it to output.
     i = 0;
     let w1, w2, w3;
     for (let e = words.length - 2; i < e; ++i) {
@@ -767,21 +793,32 @@ const subsegment = (segment, text) => {
         w2 = words[i + 1],
         w1.span > 4 && (
           output.push(w1),
-          w2.span > 4 && w2.notAStopWord && !w2.precededByDelimiter && output.push(new Segment(w1.start, w2.end))
+          w2.span > 4 && w2.notAStopWord && !w2.precededByDelimiter && (
+            output.push(seg = new Segment(w1.start, w2.end)),
+            seg.tier = tier
+          )
         ),
-        (w3 = words[i + 2]).notAStopWord && !w2.precededByDelimiter && !w3.precededByDelimiter && output.push(new Segment(w1.start, w3.end))
+        (w3 = words[i + 2]).notAStopWord && !w2.precededByDelimiter && !w3.precededByDelimiter && (
+          output.push(seg = new Segment(w1.start, w3.end)),
+          seg.tier = tier
+        )
       );
     }
     words.length > 1 && (w1 = words[words.length - 2]).notAStopWord && (
       w1.span > 4 && (
-        output.push(new Segment(w1.start, w1.end)),
-        (w2 = words[words.length - 1]).span > 4 && w2.notAStopWord && !w2.precededByDelimiter &&
-        output.push(new Segment(w1.start, w2.end))
+        output.push(seg = new Segment(w1.start, w1.end)),
+        seg.tier = tier,
+        (w2 = words[words.length - 1]).span > 4 && w2.notAStopWord && !w2.precededByDelimiter && (
+          output.push(seg = new Segment(w1.start, w2.end)),
+          seg.tier = tier
+        )
       )
     );
     words.length > 0 && (
-      (w1 = words[words.length - 1]).notAStopWord && w1.span > 4 &&
-      output.push(new Segment(w1.start, w1.end))
+      (w1 = words[words.length - 1]).notAStopWord && w1.span > 4 && (
+        output.push(seg = new Segment(w1.start, w1.end)),
+        seg.tier = tier
+      )
     );
   }
 
