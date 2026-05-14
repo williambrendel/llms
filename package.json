@@ -28,9 +28,12 @@
     "nspell": "^2.1.5"
   },
   "devDependencies": {
+    "@babel/core": "^7.29.0",
+    "@babel/preset-env": "^7.29.5",
     "@eslint/create-config": "latest",
     "@eslint/js": "latest",
     "@jest/globals": "latest",
+    "babel-jest": "^30.4.1",
     "documentation": "^14.0.3",
     "eslint": "latest",
     "eslint-plugin-css": "latest",

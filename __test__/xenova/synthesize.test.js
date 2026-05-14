@@ -4,23 +4,23 @@
  * @file synthesize.test.js
  * @brief Unit tests for the synthesize() generative text2text function.
  *
- * The @xenova/transformers pipeline is mocked at module level.
+ * The pipeline wrapper is mocked at module level.
  * Pipeline mock returns [{generated_text}] matching the real pipeline shape.
  * synthesize() returns result[0].generated_text — a string.
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Mock @xenova/transformers
+// Mock the pipeline wrapper (CJS-to-ESM bridge for @xenova/transformers)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const mockSynthesizerPipeline = jest.fn();
 
-jest.mock("@xenova/transformers", () => ({
-  pipeline: jest.fn(async (task) => {
+jest.mock("../../src/xenova/pipeline", () =>
+  jest.fn(async (task) => {
     if (task === "text2text-generation") return mockSynthesizerPipeline;
     throw new Error(`Unexpected pipeline task: ${task}`);
-  }),
-}));
+  })
+);
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -177,16 +177,16 @@ describe("synthesize — custom options", () => {
 describe("synthesize — lazy initialization", () => {
   test("initializes pipeline when no synthesizer provided", async () => {
     jest.resetModules();
-    const { pipeline } = require("@xenova/transformers");
+    const pipeline = require("../../src/xenova/pipeline");
     const freshSynthesize = require("../../src/xenova/synthesize");
     mockSynthesizerPipeline.mockResolvedValue(makeGenerationResult());
     await freshSynthesize("prompt", { synthesizer: undefined });
-    expect(pipeline).toHaveBeenCalledWith("text2text-generation", CONFIG.text2textModel);
+    expect(pipeline).toHaveBeenCalledWith("text2text-generation", CONFIG.text2textModel, expect.anything());
   });
 
   test("reuses singleton on second call", async () => {
     jest.resetModules();
-    const { pipeline } = require("@xenova/transformers");
+    const pipeline = require("../../src/xenova/pipeline");
     const freshSynthesize = require("../../src/xenova/synthesize");
     mockSynthesizerPipeline.mockResolvedValue(makeGenerationResult());
     await freshSynthesize("prompt 1", { synthesizer: undefined });
@@ -196,7 +196,7 @@ describe("synthesize — lazy initialization", () => {
 
   test("provided synthesizer skips pipeline init", async () => {
     jest.resetModules();
-    const { pipeline } = require("@xenova/transformers");
+    const pipeline = require("../../src/xenova/pipeline");
     const freshSynthesize = require("../../src/xenova/synthesize");
     await freshSynthesize("prompt", { synthesizer: mockSynthesizerPipeline });
     expect(pipeline).not.toHaveBeenCalled();
@@ -214,18 +214,18 @@ describe("synthesize.createSynthesizer", () => {
 
   test("calls pipeline with text2text-generation task and provided model", async () => {
     jest.resetModules();
-    const { pipeline } = require("@xenova/transformers");
+    const pipeline = require("../../src/xenova/pipeline");
     const freshSynthesize = require("../../src/xenova/synthesize");
     await freshSynthesize.createSynthesizer("custom/t5-model");
-    expect(pipeline).toHaveBeenCalledWith("text2text-generation", "custom/t5-model");
+    expect(pipeline).toHaveBeenCalledWith("text2text-generation", "custom/t5-model", expect.anything());
   });
 
   test("falls back to CONFIG model when none provided", async () => {
     jest.resetModules();
-    const { pipeline } = require("@xenova/transformers");
+    const pipeline = require("../../src/xenova/pipeline");
     const freshSynthesize = require("../../src/xenova/synthesize");
     await freshSynthesize.createSynthesizer();
-    expect(pipeline).toHaveBeenCalledWith("text2text-generation", CONFIG.text2textModel);
+    expect(pipeline).toHaveBeenCalledWith("text2text-generation", CONFIG.text2textModel, expect.anything());
   });
 });
 

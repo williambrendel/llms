@@ -4,22 +4,22 @@
  * @file summarize.test.js
  * @brief Unit tests for the summarize() abstractive summarization function.
  *
- * The @xenova/transformers pipeline is mocked at the module level.
+ * The pipeline wrapper is mocked at the module level.
  * The pipeline mock returns [{summary_text}] matching the real pipeline shape.
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Mock @xenova/transformers
+// Mock the pipeline wrapper (CJS-to-ESM bridge for @xenova/transformers)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const mockSummarizerPipeline = jest.fn();
 
-jest.mock("@xenova/transformers", () => ({
-  pipeline: jest.fn(async (task) => {
+jest.mock("../../src/xenova/pipeline", () =>
+  jest.fn(async (task) => {
     if (task === "summarization") return mockSummarizerPipeline;
     throw new Error(`Unexpected pipeline task: ${task}`);
-  }),
-}));
+  })
+);
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -140,16 +140,16 @@ describe("summarize — custom options", () => {
 describe("summarize — lazy initialization", () => {
   test("initializes pipeline when no summarizer provided", async () => {
     jest.resetModules();
-    const { pipeline } = require("@xenova/transformers");
+    const pipeline = require("../../src/xenova/pipeline");
     const freshSummarize = require("../../src/xenova/summarize");
     mockSummarizerPipeline.mockResolvedValue(makeSummaryResult());
     await freshSummarize("text");
-    expect(pipeline).toHaveBeenCalledWith("summarization", CONFIG.summarizationModel);
+    expect(pipeline).toHaveBeenCalledWith("summarization", CONFIG.summarizationModel, expect.anything());
   });
 
   test("reuses singleton on second call", async () => {
     jest.resetModules();
-    const { pipeline } = require("@xenova/transformers");
+    const pipeline = require("../../src/xenova/pipeline");
     const freshSummarize = require("../../src/xenova/summarize");
     mockSummarizerPipeline.mockResolvedValue(makeSummaryResult());
     await freshSummarize("text 1");
@@ -159,7 +159,7 @@ describe("summarize — lazy initialization", () => {
 
   test("provided summarizer skips pipeline init", async () => {
     jest.resetModules();
-    const { pipeline } = require("@xenova/transformers");
+    const pipeline = require("../../src/xenova/pipeline");
     const freshSummarize = require("../../src/xenova/summarize");
     await freshSummarize("text", { summarizer: mockSummarizerPipeline });
     expect(pipeline).not.toHaveBeenCalled();
@@ -177,18 +177,18 @@ describe("summarize.createSummarizer", () => {
 
   test("calls pipeline with summarization task and provided model", async () => {
     jest.resetModules();
-    const { pipeline } = require("@xenova/transformers");
+    const pipeline = require("../../src/xenova/pipeline");
     const freshSummarize = require("../../src/xenova/summarize");
     await freshSummarize.createSummarizer("custom/summarizer");
-    expect(pipeline).toHaveBeenCalledWith("summarization", "custom/summarizer");
+    expect(pipeline).toHaveBeenCalledWith("summarization", "custom/summarizer", expect.anything());
   });
 
   test("falls back to CONFIG model when none provided", async () => {
     jest.resetModules();
-    const { pipeline } = require("@xenova/transformers");
+    const pipeline = require("../../src/xenova/pipeline");
     const freshSummarize = require("../../src/xenova/summarize");
     await freshSummarize.createSummarizer();
-    expect(pipeline).toHaveBeenCalledWith("summarization", CONFIG.summarizationModel);
+    expect(pipeline).toHaveBeenCalledWith("summarization", CONFIG.summarizationModel, expect.anything());
   });
 });
 

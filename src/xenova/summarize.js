@@ -1,4 +1,6 @@
-const { pipeline } = require('@xenova/transformers');
+"use strict";
+
+const pipeline = require("./pipeline");
 const CONFIG = require("./config");
 
 /**
@@ -18,6 +20,10 @@ const CONFIG = require("./config");
  * Like other pipeline utilities, it supports lazy initialization; it will 
  * reuse a preloaded summarizer instance or create a new one on-demand 
  * based on the provided model configuration.
+ *
+ * Loads the transformers.js pipeline via the {@link pipeline} CJS-to-ESM
+ * bridge — `@xenova/transformers` is ESM-only and cannot be `require()`'d
+ * directly. The bridge is transparent to callers.
  *
  * @param {string} text
  * The source text or document to be summarized.
@@ -63,7 +69,25 @@ const CONFIG = require("./config");
  * Throws if the summarization pipeline fails to initialize or the model 
  * encounter errors during inference.
  */
-let model;
+// ── Singleton storage ──────────────────────────────────────────────────────
+// We memoize the *promise* (not the resolved pipeline) so that concurrent
+// first-callers all share the same in-flight load. See vectorize.js for
+// the full design rationale.
+let modelPromise;
+
+/**
+ * @function ensureSummarizer
+ * @description
+ * Internal helper. Returns the resolved summarizer pipeline, loading it
+ * lazily on first call and reusing the cached promise thereafter.
+ *
+ * @param {string} [summarizationModel] Model ID override.
+ * @returns {Promise<Function>} Resolved Transformers.js pipeline.
+ */
+const ensureSummarizer = (summarizationModel) => (
+  modelPromise || (modelPromise = createSummarizer(summarizationModel))
+);
+
 const summarize = async (
   text,
   {
@@ -77,10 +101,8 @@ const summarize = async (
   } = {}
 ) => {
 
-  // Init question summarization engine if needed.
-  summarizer || (
-    summarizer = model || (model = await createSummarizer(summarizationModel))
-  );
+  // Init summarization engine if needed.
+  summarizer || (summarizer = await ensureSummarizer(summarizationModel));
   const result = await summarizer(text, {
     max_length: max_new_tokens,
     max_new_tokens,
@@ -92,7 +114,11 @@ const summarize = async (
 }
 
 const createSummarizer = summarize.createSummarizer = async summarizationModel => (
-  await pipeline("summarization", summarizationModel || CONFIG.summarizationModel)
+  // quantized: true selects the smaller quantized ONNX weights. See
+  // vectorize.js / classify.js for the rationale — same tradeoff applies.
+  await pipeline("summarization", summarizationModel || CONFIG.summarizationModel, {
+    quantized: true,
+  })
 );
 
 /**
@@ -127,9 +153,7 @@ summarize.batch = async (
     ...other
   } = {}
 ) => {
-  summarizer || (
-    summarizer = model || (model = await createSummarizer(summarizationModel))
-  );
+  summarizer || (summarizer = await ensureSummarizer(summarizationModel));
   const results = await summarizer(texts, {
     max_length: max_new_tokens,
     max_new_tokens,
@@ -139,6 +163,31 @@ summarize.batch = async (
   });
   // Pipeline returns [[{summary_text}], [{summary_text}], ...] for batch input.
   return results.map(r => (Array.isArray(r) ? r[0] : r).summary_text);
+};
+
+// ---------------------------------------------------------------------------
+// summarize.prewarm
+// ---------------------------------------------------------------------------
+
+/**
+ * @function summarize.prewarm
+ * @async
+ * @description
+ * Eagerly populate the module-level summarizer singleton. See
+ * {@link vectorize.prewarm} for full design notes — same semantics.
+ *
+ * @param {object} [options]
+ * @param {Function} [options.summarizer]
+ *   Pre-instantiated pipeline. If provided, no load is performed.
+ * @param {string} [options.summarizationModel]
+ *   Model ID override. Ignored when `options.summarizer` is provided.
+ * @returns {Promise<Function>} The resolved (or supplied) pipeline.
+ */
+summarize.prewarm = async ({ summarizer, summarizationModel } = {}) => {
+  if (summarizer) {
+    return await (modelPromise = Promise.resolve(summarizer));
+  }
+  return await ensureSummarizer(summarizationModel);
 };
 
 /**

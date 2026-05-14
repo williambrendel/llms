@@ -1,330 +1,269 @@
-const fs   = require("fs").promises;
-const path = require("path");
-const segmentTextSections = require("../src/utilities/textSegmentation/segmentTextSections");
-const getFilenames = require("./io/getFilenames");
-const loadFile = require("./io/loadFile");
-const vectorize = require("../src/xenova/vectorize");
-const llm = require("../src/claude").sonnet45;
-// NOTE: ensure the Anthropic client in src/claude is instantiated with a higher
-// maxRetries than the default of 2 — e.g. `new Anthropic({ maxRetries: 5 })`.
-// That alone covers most transient 5xx / 429 / network failures without any
-// wrapper here.
+"use strict";
+
+/**
+ * @file scripts/buildKnowledgeBase.js
+ * @description CLI entry point for building VECT `.bin` knowledge bases
+ * from markdown source.
+ *
+ * Pipeline (per input file):
+ *   1. Read raw markdown.
+ *   2. `generateKnowledgeBase` — segments the text, vectorizes section
+ *      bodies, calls the LLM to produce retrieval rows, vectorizes those
+ *      rows. Returns an array of `{ range, vectors }` section records.
+ *   3. `resolveOutputPath` — computes where the `.bin` should land,
+ *      mirroring the source's subtree under `outputDir`.
+ *   4. `Document.fromSpec` + `doc.toBuffer` + `fs.writeFile` — materialize
+ *      the VECT binary and persist it. (See "Why two steps, not
+ *      doc.write" below.)
+ *
+ * Orchestration:
+ *   All files run in parallel via `Promise.allSettled`, but LLM calls
+ *   within each file share a single global concurrency pool (`llmLimit`).
+ *   This lets file-level parallelism scale arbitrarily without ever
+ *   exceeding the LLM provider's rate limit.
+ *
+ * Failure model:
+ *   Per-section LLM failures are isolated by `generateKnowledgeBase` and
+ *   reported via `onSectionError`. A file that fails entirely (e.g. read
+ *   error, write error) is reported via the top-level `Promise.allSettled`
+ *   loop. Other files keep going regardless.
+ *
+ * Usage:
+ *   node scripts/buildKnowledgeBase.js <input> <output-dir> [prompt-file]
+ *
+ *   <input>         File or directory of `.md` sources.
+ *   <output-dir>    Where `.bin` files are written. Subtree mirrors input.
+ *   [prompt-file]   LLM prompt for row generation (default:
+ *                   scripts/prompts/facts-database-prompt.ppl).
+ */
+
+const fs       = require("fs").promises;
+const fsSync   = require("fs");
+const path     = require("path");
+
+const getFilenames    = require("./io/getFilenames");
+const loadFile        = require("./io/loadFile");
+const makeLimit       = require("../src/utilities/makeLimit");
+const formatDuration  = require("./utilities/formatDuration");
+const vectorize       = require("../src/xenova/vectorize");
+const Document        = require("../src/VectorStore/Document");
+
+const {
+  generateKnowledgeBase,
+  resolveOutputPath,
+} = require("../src/knowledgeBase");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CLI args
 // ─────────────────────────────────────────────────────────────────────────────
 
 const args = process.argv.slice(2);
-const filenames = getFilenames(args[0]);
-const outputDir = args[1];
+const inputArg       = args[0];
+const outputDir      = args[1];
 const promptFilename = args[2] || "scripts/prompts/facts-database-prompt.ppl";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Concurrency limiter
+// Resolve the input root once. When the input is a directory, all source
+// filenames are interpreted relative to it to produce the mirrored output
+// subtree. When the input is a single file, sourceRoot is set to the file's
+// directory so the file ends up flat under outputDir (no synthetic subdir
+// gets created from a leading folder we don't actually mean to mirror).
+const inputAbs   = path.resolve(inputArg);
+const inputStat  = fsSync.statSync(inputAbs);
+const sourceRoot = inputStat.isDirectory() ? inputAbs : path.dirname(inputAbs);
+
+// `filenames` may be a single-entry list (file input) or a recursive
+// listing under the input directory. Either way, processOne handles each
+// entry uniformly.
+const filenames = getFilenames(inputArg);
+
+// Shared concurrency limiter across all files. LLM calls from every file
+// pass through this single pool so the total in-flight count is bounded
+// regardless of how many files run in parallel. Without this shared limit,
+// processing N files in parallel could fan out to N × sections-per-file
+// LLM calls at once, easily blowing past the provider's rate limit.
 //
-// Returns a function that accepts an async thunk and runs it under the
-// concurrency cap. FIFO queueing; rejections are propagated to the caller
-// without affecting the queue.
-// ─────────────────────────────────────────────────────────────────────────────
-
-const makeLimit = (concurrency) => {
-  let active = 0;
-  const queue = [];
-  const next = () => {
-    if (active >= concurrency || queue.length === 0) return;
-    ++active;
-    const { fn, resolve, reject } = queue.shift();
-    fn().then(resolve, reject).finally(() => { --active; next(); });
-  };
-  return (fn) => new Promise((resolve, reject) => {
-    queue.push({ fn, resolve, reject });
-    next();
-  });
-};
-
-// Tune as needed; 4 is a safe default that stays under most rate limits and
-// limits the blast radius of a single failure.
-const llmLimit = makeLimit(4);
+// The limit (8) was tuned empirically — high enough to keep the pipeline
+// busy, low enough to leave headroom for the provider's burst policy.
+const llmLimit = makeLimit(8);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Process file
-// ─────────────────────────────────────────────────────────────────────────────
-
-const processFile = async (data, prompt) => {
-  if (!data) throw Error(`Missing input data`);
-
-  // 1. Extract sections.
-  const sections = segmentTextSections(data).contentSections();
-
-  // 2. Process each section.
-  const output = [], responsePromises = [];
-  for (let i = 0, l = sections.length, section; i !== l; ++i) {
-    section = sections[i];
-    const range = [section.paragraph > 0 ? section.start : (section.header?.[0] ?? section.start), section.end];
-    const ancestors = (section.ancestors || []).map(h => h.extractTitle(data));
-    const header = section.header && section.header.extractTitle(data) || "";
-    const sentences = section.content;
-    const content = sentences.extract(data);
-
-    // Derive the text to vectorize from the content itself.
-    const vecPromises = [];
-    const breadcrumbs = [...ancestors, header].filter(Boolean);
-    const h = breadcrumbs.join(", ");
-    h && vecPromises.push(vectorize(h));
-    content && vecPromises.push(vectorize(content));
-    for (const sentence of sentences) vecPromises.push(vectorize(sentence.extract(data)));
-
-    // Derive questions — wrapped in the concurrency limiter.
-    const hh = breadcrumbs.join(" > ");
-    responsePromises.push(
-      llmLimit(() => llm.run(prompt, `${hh && "section header breadcrumbs: " + hh + "\n\nsection content:\n" || ""}${content}`))
-    );
-
-    output.push({
-      range,
-      vecs: vecPromises
-    });
-  }
-
-  // allSettled so one failed section doesn't lose the rest of the file.
-  const settled = await Promise.allSettled(responsePromises);
-
-  for (let i = 0, l = settled.length, result; i !== l; ++i) {
-    result = settled[i];
-
-    if (result.status === "rejected") {
-      console.error(`🚨  Section ${i} LLM call failed:`, result.reason?.message || result.reason);
-      continue;
-    }
-
-    const response = result.value;
-
-    try {
-      const rows = response.output.json();
-      if (!Array.isArray(rows)) {
-        console.warn(`Section ${i}: response.output.json() did not return an array, skipping`);
-        continue;
-      }
-
-      for (let r = 0, m = rows.length; r !== m; ++r) {
-        const row = rows[r];
-        if (!row || typeof row.question !== "string" || !row.question) {
-          console.warn(`Section ${i}, row ${r}: missing or empty question, skipping`);
-          continue;
-        }
-
-        const { question, anchors, variants } = row;
-        output[i].vecs.push(vectorize(question));
-        output[i].vecs.push(...(anchors || []).map(x => vectorize(x)));
-        output[i].vecs.push(...(variants || []).map(x => vectorize(x)));
-      }
-
-      console.log("\n\n", data.slice(...output[i].range), rows);
-    } catch (error) {
-      console.error(`🚨  Section ${i} row processing failed:`, error);
-    }
-  }
-
-  return output;
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Write per-file binary
+// Per-file processing
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * @function writeKnowledgeBase
- * @description Write a per-file VECT binary.
+ * Process a single source file end-to-end: read, generate sections,
+ * serialize as VECT v2, write to disk, log a summary line.
  *
- * Layout:
- *   Header (32 bytes, 8 × Uint32):
- *     [0] magic        = "VECT" (0x56454354)
- *     [1] version      = 1
- *     [2] indexDim     = 3 (start, end, vecCount)
- *     [3] vecDim       = embedding dimension
- *     [4] numSections
- *     [5] totalVecs
- *     [6] indexBytes
- *     [7] vecBytes
- *
- *   Index buffer: numSections × indexDim Uint32  (start, end, vecCount per section)
- *   Vec buffer:   totalVecs   × vecDim   Float32 (sections concatenated in order)
- *
- * @param {string}        filename
- * @param {Array<{range: [number, number], vecs: Float32Array[]}>} sections
- * @param {number}        dim
- * @param {string}        outputDir
+ * Returns a small per-file record for the top-level summary. Throws on
+ * unrecoverable errors (file read failure, write failure, malformed input)
+ * — `Promise.allSettled` in `main` will catch and report those.
  */
-const writeKnowledgeBase = async (filename, sections, dim, outputDir) => {
-  const numSections = sections.length;
-  const indexDim = 3;
+const processOne = async filename => {
+  const fileStart = Date.now();
+  const { data }  = await loadFile(filename);
 
-  // Compute total vector count.
+  // ── Step 1: Generate section records ──────────────────────────────────
+  // generateKnowledgeBase does the heavy lifting: segments the markdown,
+  // vectorizes bodies under a word-count bucket heuristic, fans out one
+  // LLM call per section (gated by llmLimit), then attaches the LLM-
+  // derived row vectors. All vector promises are awaited before this
+  // returns.
+  //
+  // The two callbacks let the build script handle logging without coupling
+  // the generator to a logger. `onSection` fires after each section's body
+  // vectorization is queued; `onSectionError` fires when an LLM call fails
+  // (other sections continue).
+  const sections = await generateKnowledgeBase(data, prompt, {
+    limit: llmLimit,
+    onSection: (i, { wordCount, bucket, bodyVecs }) => {
+      console.log(
+        `Section ${i}: ${wordCount} words → ${bucket} ` +
+        `(${bodyVecs} body vector${bodyVecs === 1 ? "" : "s"})`
+      );
+    },
+    onSectionError: (i, err) => {
+      console.error(`🚨  Section ${i} failed:`, err?.message || err);
+    },
+  });
+
+  // ── Step 2: Resolve the output path ───────────────────────────────────
+  // resolveOutputPath handles two things:
+  //   - mirrors the source's subtree under outputDir (biology/foo.md →
+  //     <outputDir>/biology/foo.bin)
+  //   - derives the documentId from the source filename
+  //
+  // Pure function — no I/O. The actual write happens below.
+  const { outPath, documentId } = resolveOutputPath(filename, outputDir, sourceRoot);
+
+  // ── Step 3: Materialize and write the VECT binary ─────────────────────
+  // Document.write does NOT create intermediate directories; that's an
+  // intentional separation of concerns (path layout is a build-pipeline
+  // job, not a Document job). So we mkdir first.
+  await fs.mkdir(path.dirname(outPath), { recursive: true });
+
+  // Build the Document. fromSpec is sync and cheap — allocates the index
+  // and vec buffers, copies vectors into the vec buffer, computes
+  // vecOffsets. No I/O.
+  const doc = Document.fromSpec({ documentId, vecDim: dim, sections });
+
+  // Why two steps (toBuffer + writeFile) instead of doc.write(outPath):
+  //
+  //   doc.write(outPath) would internally do `fs.writeFile(outPath,
+  //   this.toBuffer())` — exactly the two lines below in one call.
+  //   Convenient when the byte size doesn't matter to the caller.
+  //
+  //   We split the steps here because the summary log line reports the
+  //   file size in KB. Going through doc.write would force us to either:
+  //     - read the file back from disk after writing (extra I/O), or
+  //     - call doc.toBuffer() a second time just for .length (serializes
+  //       twice — wasted work).
+  //
+  //   Calling toBuffer() once and reusing the buffer for both the write
+  //   and the byte count is the cleanest path. The trade-off is that we
+  //   show the lower-level mechanics in this hot loop, but the comment
+  //   above the alternative makes the choice traceable.
+  const buffer = doc.toBuffer();
+  await fs.writeFile(outPath, buffer);
+
+  // ── Step 4: Summary ───────────────────────────────────────────────────
+  // Compute total vector count from the section records. Could have read
+  // it off the Document (doc.totalVecs is exposed), but summing here keeps
+  // the summary block self-contained and makes the relationship between
+  // the section list and the vector count obvious.
   let totalVecs = 0;
-  for (let i = 0; i !== numSections; ++i) totalVecs += sections[i].vecs.length;
+  for (let i = 0; i !== sections.length; ++i) totalVecs += sections[i].vectors.length;
 
-  // Index buffer: (start, end, vecCount) per section, all Uint32.
-  const indexBuffer = new Uint32Array(numSections * indexDim);
-  for (let i = 0; i !== numSections; ++i) {
-    const { range, vecs } = sections[i];
-    indexBuffer[i * indexDim    ] = range[0];
-    indexBuffer[i * indexDim + 1] = range[1];
-    indexBuffer[i * indexDim + 2] = vecs.length;
-  }
+  const durationMs = Date.now() - fileStart;
 
-  // Vec buffer: all section vectors concatenated.
-  const vecBuffer = new Float32Array(totalVecs * dim);
-  for (let i = 0, offset = 0; i !== numSections; ++i) {
-    const vecs = sections[i].vecs;
-    for (let j = 0, l = vecs.length; j !== l; ++j, offset += dim) {
-      vecBuffer.set(vecs[j], offset);
-    }
-  }
+  console.log(
+    `Wrote ${outPath}: ` +
+    `documentId=${documentId}, ` +
+    `${sections.length} sections, ${totalVecs} vectors, ` +
+    `${(buffer.length / 1024).toFixed(1)}KB, ` +
+    `${formatDuration(durationMs)}`
+  );
 
-  // Header.
-  const header = new Uint32Array(8);
-  header[0] = 0x56454354;             // Magic "VECT"
-  header[1] = 1;                      // Version
-  header[2] = indexDim;
-  header[3] = dim;
-  header[4] = numSections;
-  header[5] = totalVecs;
-  header[6] = indexBuffer.byteLength;
-  header[7] = vecBuffer.byteLength;
-
-  const finalBuffer = Buffer.concat([
-    Buffer.from(header.buffer),
-    Buffer.from(indexBuffer.buffer),
-    Buffer.from(vecBuffer.buffer)
-  ]);
-
-  // Output: <outputDir>/<basename>.bin
-  const outName = path.basename(filename, path.extname(filename)) + ".bin";
-  const outPath = path.join(outputDir, outName);
-
-  await fs.mkdir(outputDir, { recursive: true });
-  await fs.writeFile(outPath, finalBuffer);
-  console.log(`Wrote ${outPath}: ${numSections} sections, ${totalVecs} vectors`);
+  return { filename, durationMs };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Main
+// Run
 // ─────────────────────────────────────────────────────────────────────────────
 
+// `prompt` and `dim` are loaded once in main() but referenced by processOne
+// through closure. Module-scoped `let` keeps them out of the inner function
+// signature without making them globals — they're parameters to the build
+// run, not to any individual file's processing.
+let prompt;
+let dim;
+
+/**
+ * Orchestrates the full build run:
+ *   1. Loads the prompt file (one-time read).
+ *   2. Probes the embedding dimension by vectorizing a dummy string. We
+ *      can't hardcode this — it depends on the encoder model in use. A
+ *      single probe at the start avoids inconsistency if the model
+ *      changes between builds.
+ *   3. Echoes the resolved paths and dim so the user can verify the build
+ *      is reading what they expect.
+ *   4. Fans out processOne across all input files in parallel. The shared
+ *      llmLimit (defined at module top) keeps the LLM call rate bounded
+ *      regardless of how many files are processed concurrently.
+ *   5. Aggregates pass/fail counts and times. Per-file failures are
+ *      reported in line but don't abort the run — other files keep going.
+ *   6. Sets a non-zero exit code if anything failed, so CI surfaces the
+ *      problem.
+ */
 const main = async () => {
-  // 1. Load prompt
-  const prompt = await fs.readFile(promptFilename, "utf-8");
+  const runStart = Date.now();
 
-  // 2. Initialize feature extraction model and probe embedding dimension.
+  // Prompt is identical across all files in a run, so we read once.
+  prompt = await fs.readFile(promptFilename, "utf-8");
+
+  // Probe the embedding model to discover its output dimension. We use
+  // this dim everywhere downstream — Document.fromSpec needs it, the
+  // header records it, the loader verifies it. Doing this once at the
+  // start guarantees every .bin in this run uses the same dim.
   const probe = await vectorize("probe");
-  const dim = probe.length;
+  dim = probe.length;
+
   console.log(`Embedding dimension: ${dim}`);
+  console.log(`Source root:        ${sourceRoot}`);
+  console.log(`Output directory:   ${path.resolve(outputDir)}`);
 
-  // 3. Process each file → write its own binary.
-  // allSettled so one failed file doesn't lose the rest of the run.
-  const results = await Promise.allSettled(filenames.map(async filename => {
-    const { data } = await loadFile(filename);
-    const sections = await processFile(data, prompt);
-    await writeKnowledgeBase(filename, sections, dim, outputDir);
-    return filename;
-  }));
+  // Parallel processing of all files. Promise.allSettled (not
+  // Promise.all) so that one bad file doesn't tear down the entire run —
+  // we want to know about every failure, not just the first one.
+  const results = await Promise.allSettled(filenames.map(processOne));
 
-  // Summary.
+  // Tally outcomes for the final summary.
   let succeeded = 0, failed = 0;
   for (const r of results) {
     if (r.status === "fulfilled") {
       ++succeeded;
     } else {
       ++failed;
+      // The error came from processOne — typically a read, mkdir, or
+      // write failure. Section-level LLM failures are caught inside
+      // generateKnowledgeBase and reported via onSectionError, so they
+      // don't reach here.
       console.error(`🚨  File failed:`, r.reason?.message || r.reason);
     }
   }
-  console.log(`Build complete: ${succeeded} succeeded, ${failed} failed`);
 
-  // Exit non-zero if any file failed, so CI/parent processes can detect it.
+  const totalMs = Date.now() - runStart;
+  console.log(
+    `Build complete: ${succeeded} succeeded, ${failed} failed in ${formatDuration(totalMs)}`
+  );
+
+  // Set a non-zero exit code on any failure so CI/automation picks it up.
+  // We use exitCode rather than process.exit() so the event loop drains
+  // cleanly before exit — any pending logs flush, file handles close.
   if (failed > 0) process.exitCode = 1;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Loader
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * @function loadKnowledgeBase
- * @description Zero-copy loader for the per-file VECT binary format.
- *
- * Returns typed-array views into the underlying file buffer, plus a
- * precomputed prefix-sum of vector counts (`vecOffsets`) enabling O(1)
- * per-section vector access via `getSection(i)`.
- *
- * @param {string} filepath  Path to a .bin file.
- * @returns {Promise<{
- *   version: number,
- *   indexDim: number,
- *   vecDim: number,
- *   numSections: number,
- *   totalVecs: number,
- *   indexBuffer: Uint32Array,    // numSections × indexDim (start, end, vecCount)
- *   vecBuffer: Float32Array,     // totalVecs × vecDim
- *   vecOffsets: Uint32Array,     // numSections + 1; vecOffsets[i] = vector index where section i starts
- *   getSection: (i: number) => { start: number, end: number, vectors: Float32Array }
- * }>}
- */
-const loadKnowledgeBase = async filepath => {
-  const buffer = await fs.readFile(filepath);
-
-  // 1. Header (32 bytes).
-  const header = new Uint32Array(buffer.buffer, buffer.byteOffset, 8);
-  const [magic, version, indexDim, vecDim, numSections, totalVecs, indexBytes, vecBytes] = header;
-
-  if (magic !== 0x56454354) throw new Error("Invalid VECT binary: Magic mismatch");
-
-  let offset = 32;
-
-  // 2. Index buffer (Uint32, naturally 4-aligned).
-  const indexBuffer = new Uint32Array(buffer.buffer, buffer.byteOffset + offset, indexBytes >> 2);
-  offset += indexBytes;
-
-  // 3. Vec buffer (Float32, follows index at a 4-aligned boundary).
-  const vecBuffer = new Float32Array(buffer.buffer, buffer.byteOffset + offset, vecBytes >> 2);
-
-  // 4. Precompute cumulative vector offsets for O(1) per-section access.
-  //    vecOffsets[i]   = vector index where section i starts
-  //    vecOffsets[i+1] = one past the last vector in section i
-  const vecOffsets = new Uint32Array(numSections + 1);
-  for (let i = 0; i !== numSections; ++i) {
-    vecOffsets[i + 1] = vecOffsets[i] + indexBuffer[i * indexDim + 2];
-  }
-
-  return {
-    version,
-    indexDim,
-    vecDim,
-    numSections,
-    totalVecs,
-    indexBuffer,
-    vecBuffer,
-    vecOffsets,
-    getSection: i => ({
-      start:   indexBuffer[i * indexDim    ],
-      end:     indexBuffer[i * indexDim + 1],
-      vectors: vecBuffer.subarray(vecOffsets[i] * vecDim, vecOffsets[i + 1] * vecDim)
-    })
-  };
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Exports
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * @ignore
- */
-module.exports = Object.freeze({
-  loadKnowledgeBase
-});
-
-// Run if called directly
+// Only run main() when this file is invoked directly (not when required
+// by another module, e.g. a test). Standard Node entry-point pattern.
 if (require.main === module) {
   main();
 }

@@ -16,20 +16,25 @@
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Mock @xenova/transformers
+// Mock the pipeline wrapper (which bridges CJS → ESM for @xenova/transformers)
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// `vectorize.js` no longer requires `@xenova/transformers` directly — it
+// goes through `./pipeline.js`, the dynamic-import wrapper. So the right
+// mock target here is the wrapper. The mock receives the same (task,
+// modelId) args the wrapper would, dispatches by task, and returns the
+// appropriate fake pipeline instance.
 
 const MOCK_EMBEDDING = new Float32Array([0.1, 0.2, 0.3, 0.4]);
 
 const mockExtractorPipeline = jest.fn();
 
-jest.mock("@xenova/transformers", () => ({
-  pipeline: jest.fn(async (task) => {
+jest.mock("../../src/xenova/pipeline", () =>
+  jest.fn(async (task) => {
     if (task === "feature-extraction") return mockExtractorPipeline;
     throw new Error(`Unexpected pipeline task: ${task}`);
-  }),
-}));
-
+  })
+);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Setup
@@ -234,19 +239,20 @@ describe("vectorize — pipeline options", () => {
 describe("vectorize — lazy initialization", () => {
   test("initializes pipeline when no extractor provided", async () => {
     jest.resetModules();
-    const { pipeline } = require("@xenova/transformers");
+    const pipeline = require("../../src/xenova/pipeline");
     const freshVectorize = require("../../src/xenova/vectorize");
     mockExtractorPipeline.mockResolvedValue({ data: MOCK_EMBEDDING });
     await freshVectorize("text");
     expect(pipeline).toHaveBeenCalledWith(
       "feature-extraction",
-      CONFIG.featureExtractionModel
+      CONFIG.featureExtractionModel,
+      expect.anything()
     );
   });
 
   test("reuses singleton on second call", async () => {
     jest.resetModules();
-    const { pipeline } = require("@xenova/transformers");
+    const pipeline = require("../../src/xenova/pipeline");
     const freshVectorize = require("../../src/xenova/vectorize");
     mockExtractorPipeline.mockResolvedValue({ data: MOCK_EMBEDDING });
     await freshVectorize("text 1");
@@ -256,7 +262,7 @@ describe("vectorize — lazy initialization", () => {
 
   test("provided extractor skips pipeline init", async () => {
     jest.resetModules();
-    const { pipeline } = require("@xenova/transformers");
+    const pipeline = require("../../src/xenova/pipeline");
     const freshVectorize = require("../../src/xenova/vectorize");
     await freshVectorize("text", { extractor: mockExtractorPipeline });
     expect(pipeline).not.toHaveBeenCalled();
@@ -274,20 +280,21 @@ describe("vectorize.createExtractor", () => {
 
   test("calls pipeline with feature-extraction task and provided model", async () => {
     jest.resetModules();
-    const { pipeline } = require("@xenova/transformers");
+    const pipeline = require("../../src/xenova/pipeline");
     const freshVectorize = require("../../src/xenova/vectorize");
     await freshVectorize.createExtractor("custom/embedding-model");
-    expect(pipeline).toHaveBeenCalledWith("feature-extraction", "custom/embedding-model");
+    expect(pipeline).toHaveBeenCalledWith("feature-extraction", "custom/embedding-model", expect.anything());
   });
 
   test("falls back to CONFIG model when none provided", async () => {
     jest.resetModules();
-    const { pipeline } = require("@xenova/transformers");
+    const pipeline = require("../../src/xenova/pipeline");
     const freshVectorize = require("../../src/xenova/vectorize");
     await freshVectorize.createExtractor();
     expect(pipeline).toHaveBeenCalledWith(
       "feature-extraction",
-      CONFIG.featureExtractionModel
+      CONFIG.featureExtractionModel,
+      expect.anything()
     );
   });
 

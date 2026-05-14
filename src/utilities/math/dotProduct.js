@@ -45,20 +45,127 @@ const dotProductUnsafe = (v1, v2, dim, offset1 = 0, offset2 = 0) => {
   if (!(dim > 0)) return 0;
 
   // Compute dot product by increment of 4 for faster computation.
-  let d = 0, o1 = offset1 || 0, o2 = offset2 || 0, res = 0;
-  for (const e = dim - 4; d < e; d += 4, o1 += 4, o2 += 4) {
-    res += v1[o1] * v2[o2]
-      + v1[o1 + 1] * v2[o2 + 1]
-      + v1[o1 + 2] * v2[o2 + 2]
-      + v1[o1 + 3] * v2[o2 + 3];
+  let d = 0, o1 = offset1 ?? 0, o2 = offset2 ?? 0, res = 0, r0 = 0, r1 = 0, r2 = 0, r3 = 0;
+  for (const e = dim & ~3; d < e; d += 4) {
+    r0 += v1[o1++] * v2[o2++];
+    r1 += v1[o1++] * v2[o2++];
+    r2 += v1[o1++] * v2[o2++];
+    r3 += v1[o1++] * v2[o2++];
   }
+  res = r0 + r1 + r2 + r3;
 
   // Remainder if dim is not a multiple of 4.
-  for (; d !== dim; ++d, ++o1, ++o2) {
-    res += v1[o1] * v2[o2];
+  switch (dim & 3) {
+    case 3:
+      res += v1[o1 + 2] * v2[o2 + 2];
+    case 2:
+      res += v1[o1 + 1] * v2[o2 + 1];
+    case 1:
+      res += v1[o1] * v2[o2];
   }
 
   return res;
+}
+
+/**
+ * Compute `n` dot products in a single batched call.
+ *
+ * Treats `M` as a flat row-major matrix of shape `n × dim` and computes
+ * `v · M[i]` for each row `i ∈ [0, n)`. Equivalent to:
+ *
+ * ```
+ * for (let i = 0; i < n; i++) output[i] = dotProduct(v, M.subarray(i*dim, (i+1)*dim));
+ * ```
+ *
+ * but materially faster because the inner loop unrolls 4-wide. Each
+ * iteration accumulates four products into four independent accumulators
+ * (`r0..r3`), letting the CPU's pipelined multiplier stay busy through the
+ * hot path instead of stalling on a single dependency chain. The four
+ * partial sums are combined at the end.
+ *
+ * The function name is suffixed with `Unsafe` to flag that no input
+ * validation is performed:
+ *   - `v` must be at least `dim` elements long.
+ *   - `M` must be at least `n × dim` elements long.
+ *   - `output`, when supplied, must be at least `n` elements long.
+ *   - All inputs must be numeric typed arrays (Float32Array / Float64Array).
+ *
+ * Violating any of these produces silently wrong results or undefined
+ * behavior, not an exception. Use {@link dotProductBatch} (if defined) for
+ * a validating variant.
+ *
+ * @function dotProductUnsafeBatch
+ *
+ * @param {Float32Array|Float64Array} v
+ *   Query vector of length `dim`. Read but not modified.
+ *
+ * @param {Float32Array|Float64Array} M
+ *   Row-major matrix of shape `n × dim`, flattened. `M[i*dim + j]` is the
+ *   `j`-th component of the `i`-th row. Read but not modified.
+ *
+ * @param {number} n
+ *   Number of rows in `M` to process. Must be `> 0` for any work to be
+ *   done; non-positive `n` returns `null`.
+ *
+ * @param {number} dim
+ *   Length of each row (and of `v`). When `dim <= 0`, the function returns
+ *   a zero-initialized output array of length `n` without doing any work.
+ *
+ * @param {Float32Array} [output]
+ *   Optional preallocated output buffer. Reused when its length is at
+ *   least `n` — useful to avoid per-call allocation when the function is
+ *   invoked repeatedly with the same `n`. When omitted or too short, a
+ *   fresh `Float32Array(n)` is allocated.
+ *
+ * @returns {Float32Array|null}
+ *   The output buffer with `output[i] = v · M[i]` for each row, or `null`
+ *   when `n <= 0`.
+ *
+ * @example <caption>Score a query against many candidate vectors</caption>
+ * const scores = dotProductUnsafeBatch(query, candidates, numCandidates, dim);
+ * // scores[i] = dot product of query with the i-th candidate.
+ *
+ * @example <caption>Reuse an output buffer across calls</caption>
+ * const buf = new Float32Array(maxN);
+ * for (const { vectors, n } of batches) {
+ *   const scores = dotProductUnsafeBatch(query, vectors, n, dim, buf);
+ *   // ...
+ * }
+ *
+ * @see dotProductUnsafe — single-vector variant.
+ */
+const dotProductUnsafeBatch = (v, M, n, dim, output) => {
+  if (!(n > 0)) return null;
+
+  // Reuse if big enough, else allocate.
+  output && output.length >= n || (output = new Float32Array(n));
+  if (!(dim > 0)) return output;
+
+  for (let i = 0, o = 0, res, k, d, r0, r1, r2, r3, e = dim & ~3, rdim = dim & 3; i !== n; ++i) {
+    k = d = r0 = r1 = r2 = r3 = 0;
+
+    // Compute dot product by increment of 4 for faster computation.
+    for (; d < e; d += 4) {
+      r0 += v[k++] * M[o++];
+      r1 += v[k++] * M[o++];
+      r2 += v[k++] * M[o++];
+      r3 += v[k++] * M[o++];
+    }
+    res = r0 + r1 + r2 + r3;
+
+    // Remainder if dim is not a multiple of 4.
+    switch (rdim) {
+      case 3:
+        res += v[k++] * M[o++];
+      case 2:
+        res += v[k++] * M[o++];
+      case 1:
+        res += v[k] * M[o++];
+    }
+    output[i] = res;
+  }
+
+  return output;
 }
 
 /**
@@ -141,6 +248,14 @@ const dotProduct = (v1, v2, dim, offset1, offset2) => {
  *              without input validation.
  */
 dotProduct.dotProductUnsafe = dotProductUnsafe;
+
+/**
+ * @name dotProduct.dotProductUnsafeBatch
+ * @type {dotProductUnsafeBatch}
+ * @description Alias for {@link dotProductUnsafeBatch}. Computes the dot product
+ *              without input validation and in batch.
+ */
+dotProduct.dotProductUnsafe.batch = dotProduct.dotProductUnsafeBatch = dotProductUnsafeBatch;
 
 /**
  * @ignore

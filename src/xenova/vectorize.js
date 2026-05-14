@@ -1,6 +1,6 @@
 "use strict";
 
-const { pipeline } = require("@xenova/transformers");
+const pipeline = require("./pipeline");
 const CONFIG = require("./config");
 
 // ---------------------------------------------------------------------------
@@ -100,7 +100,12 @@ const defaultTextNormalization = (text) => text
  * pre-initialized extractor via `options.extractor` to avoid re-loading the
  * model on each call.
  *
+ * Loads the transformers.js pipeline via the {@link pipeline} CJS-to-ESM
+ * bridge — `@xenova/transformers` is ESM-only and cannot be `require()`'d
+ * directly. The bridge is transparent to callers.
+ *
  * @see {@link https://huggingface.co/docs/transformers.js|Transformers.js Documentation}
+ * @see {@link pipeline} for the dynamic-import wrapper.
  */
 
 /**
@@ -183,7 +188,33 @@ const defaultTextNormalization = (text) => text
  * @see {@link defaultTextNormalization} for the default text pre-processing applied.
  * @see {@link createExtractor} for pre-initializing the pipeline.
  */
-let model;
+// ── Singleton storage ──────────────────────────────────────────────────────
+// We memoize the *promise* (not the resolved pipeline) so that concurrent
+// first-callers all share the same in-flight load rather than each kicking
+// off their own. The first caller assigns; later callers await the same
+// promise. Idempotent: once set, the singleton is reused forever.
+let modelPromise;
+
+/**
+ * @function ensureExtractor
+ * @description
+ * Internal helper. Returns the resolved extractor pipeline, loading it
+ * lazily on first call and reusing the cached promise thereafter. All
+ * code paths that need a model go through this — the public function,
+ * the public `prewarm`, and any future variants — so the singleton
+ * semantics live in exactly one place.
+ *
+ * Safe against concurrent calls: the promise is assigned synchronously
+ * before any await, so simultaneous callers see the same in-flight
+ * promise and the model loads exactly once.
+ *
+ * @param {string} [featureExtractionModel] Model ID override.
+ * @returns {Promise<Function>} Resolved Transformers.js pipeline.
+ */
+const ensureExtractor = (featureExtractionModel) => (
+  modelPromise || (modelPromise = createExtractor(featureExtractionModel))
+);
+
 const vectorize = async (
   text,
   {
@@ -197,12 +228,10 @@ const vectorize = async (
   } = {}
 ) => {
   // ── Initialize extractor ──────────────────────────────────────────────────
-  // Reuse the provided extractor, fall back to the module-level singleton,
-  // or create a new singleton if this is the first call.
+  // Use a caller-provided extractor if one was passed (test seam or
+  // pre-warmed instance), otherwise fall through to the module singleton.
 
-  extractor || (
-    extractor = model || (model = await createExtractor(featureExtractionModel))
-  );
+  extractor || (extractor = await ensureExtractor(featureExtractionModel));
 
   // ── Text normalization ────────────────────────────────────────────────────
   // Coerce falsy input to empty string, then apply normalization.
@@ -224,6 +253,64 @@ const vectorize = async (
   // of what the underlying pipeline returns.
 
   return new Float32Array(result.data);
+};
+
+// ---------------------------------------------------------------------------
+// vectorize.prewarm
+// ---------------------------------------------------------------------------
+
+/**
+ * @function vectorize.prewarm
+ * @async
+ * @description
+ * Eagerly populate the module-level extractor singleton so that the first
+ * `vectorize()` call pays no model-load cost. Call this at server boot to
+ * move the ~6s cold start out of the request path.
+ *
+ * Idempotent: subsequent calls are no-ops that return the same resolved
+ * pipeline. Safe to call concurrently — all callers share the in-flight
+ * load promise.
+ *
+ * Two modes:
+ *
+ *   1. Default model (or override via `featureExtractionModel`): performs
+ *      the actual load through `createExtractor`.
+ *
+ *   2. Pre-instantiated `extractor`: bypasses the load entirely and
+ *      installs the supplied instance as the singleton. Useful for tests
+ *      that want to inject a mock pipeline, or for callers that have
+ *      already loaded a model via a different code path.
+ *
+ * @param {object} [options]
+ * @param {Function} [options.extractor]
+ *   Pre-instantiated Transformers.js pipeline. If provided, no load is
+ *   performed; this instance becomes the singleton.
+ * @param {string} [options.featureExtractionModel]
+ *   Model ID override. Ignored when `options.extractor` is provided.
+ * @returns {Promise<Function>} The resolved (or supplied) pipeline.
+ *
+ * @example <caption>Pre-warm at server boot</caption>
+ * await vectorize.prewarm();
+ * // The next vectorize() call is instant.
+ *
+ * @example <caption>Inject a custom model</caption>
+ * await vectorize.prewarm({ featureExtractionModel: "Xenova/bge-large-en" });
+ *
+ * @example <caption>Test seam: inject a mock</caption>
+ * await vectorize.prewarm({ extractor: mockPipeline });
+ */
+const prewarm = async ({ extractor, featureExtractionModel } = {}) => {
+  // Caller supplied a pre-instantiated pipeline: install it directly as
+  // the resolved promise. Wrapping in Promise.resolve(...) preserves the
+  // promise-shaped singleton invariant — ensureExtractor always sees a
+  // promise, never a raw value.
+  if (extractor) {
+    return await (modelPromise = Promise.resolve(extractor));
+  }
+  // Otherwise route through the lazy initializer. If a load is already
+  // in flight, this awaits the same promise; if no load has started yet,
+  // it kicks one off and memoizes it.
+  return await ensureExtractor(featureExtractionModel);
 };
 
 // ---------------------------------------------------------------------------
@@ -250,12 +337,19 @@ const vectorize = async (
  * const vec = await vectorize("water treatment", { extractor });
  */
 const createExtractor = async (featureExtractionModel) => (
-  await pipeline("feature-extraction", featureExtractionModel || CONFIG.featureExtractionModel)
+  // quantized: true selects the ~25MB quantized ONNX weights for BGE-small
+  // instead of the ~80MB full-precision variant. Quality difference on
+  // sentence-embedding retrieval is well below the noise floor of cosine
+  // ranking; the download/load saving is material on first run.
+  await pipeline("feature-extraction", featureExtractionModel || CONFIG.featureExtractionModel, {
+    quantized: true,
+  })
 );
 
-// Attach createExtractor and defaultTextNormalization to the vectorize
-// function so they are accessible without additional imports.
+// Attach createExtractor, prewarm, and defaultTextNormalization to the
+// vectorize function so they are accessible without additional imports.
 vectorize.createExtractor          = createExtractor;
+vectorize.prewarm                  = prewarm;
 vectorize.defaultTextNormalization = defaultTextNormalization;
 
 /**

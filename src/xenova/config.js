@@ -60,12 +60,25 @@
  *                                    | Xenova/bart-large-cnn        | Better      | Moderate         | Large-scale sequence modeling (~500MB). Superior for high-quality abstractive synthesis.    |
  *                                    | Xenova/LaMini-Flan-T5-783M   | Best	       | Large / Slower	  | High-density reasoning (~800MB). Best for "human-like" synthesis in Node.js environments.   |
  *                                    | Xenova/flan-t5-large         | Best	       | Large / Slower	  | Maximum logical precision (~800MB). Used when output accuracy is more critical than speed.  |
+ *
+ * @property {string} zeroShotClassificationModel - NLI-backbone model identifier for zero-shot text classification.
+ *                                                  Used by `classify.js` as the fallback for the anchor-cosine classifier
+ *                                                  when scores are weak or the margin is thin. Per-call cost is one model
+ *                                                  forward pass per candidate label, so latency scales linearly with the
+ *                                                  number of classes (3 in the analyzeQuery case → ~100-300ms total).
+ *                                                  | **Model**                                          | **Quality** | **Size / Speed**  | **Best for**                                                                                              |
+ *                                                  | -------------------------------------------------- | ----------- | ----------------- | --------------------------------------------------------------------------------------------------------- |
+ *                                                  | Xenova/nli-deberta-v3-xsmall                       | Good        | **Small / Fast**  | Recommended default. ~80MB DeBERTa-v3 head trained on MNLI; strong out-of-the-box zero-shot accuracy.     |
+ *                                                  | Xenova/distilbert-base-uncased-mnli                | Good        | Small / Fast      | Lightweight DistilBERT MNLI head; slightly weaker than DeBERTa-xsmall but compatible across most setups.  |
+ *                                                  | Xenova/bart-large-mnli                             | Strong      | Large             | High-accuracy zero-shot reasoning. Use when fallback frequency is high enough to justify the load cost.   |
+ *                                                  | Xenova/nli-deberta-v3-small                        | Strong      | Moderate          | Better accuracy than xsmall at ~150MB. Solid middle ground if the xsmall starts to misclassify.           |
+ *                                                  | Xenova/nli-deberta-v3-base                         | Strong+     | Moderate-Large    | Higher capacity for nuanced entailment. Useful when class descriptions overlap semantically.              |
  * 
  * @throws {Error} Implicitly throws if ANTHROPIC_API_KEY is not set in environment
  * 
  * @example
  * const CONFIG = require("./config");
- * console.log(CONFIG.featureExtractionModel); // "Xenova/all-MiniLM-L12-v2"
+ * console.log(CONFIG.featureExtractionModel); // "Xenova/bge-small-en-v1.5"
  * 
  * @example
  * // Configuration is immutable
@@ -75,10 +88,11 @@
  * @see {@link https://huggingface.co/docs/transformers.js|Transformers.js Documentation}
  */
 const CONFIG = {
-  featureExtractionModel: "Xenova/bge-small-en-v1.5", // Feature extraction transformer model for fast retrieval
-  questionAnsweringModel: "onnx-community/all-MiniLM-L12-v2-qa-all-ONNX", // Model for fast question answering
-  summarizationModel: "Xenova/t5-base", // Model for text summarization
-  text2textModel: "Xenova/LaMini-Flan-T5-783M" // Model for text generation
+  featureExtractionModel:      "Xenova/bge-small-en-v1.5",                      // Feature extraction transformer model for fast retrieval
+  questionAnsweringModel:      "onnx-community/all-MiniLM-L12-v2-qa-all-ONNX",  // Model for fast question answering
+  summarizationModel:          "Xenova/t5-base",                                 // Model for text summarization
+  text2textModel:              "Xenova/LaMini-Flan-T5-783M",                    // Model for text generation
+  zeroShotClassificationModel: "Xenova/nli-deberta-v3-xsmall",                  // NLI backbone for zero-shot classification fallback
 };
 
 /**

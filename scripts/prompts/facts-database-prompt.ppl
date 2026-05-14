@@ -114,14 +114,14 @@ GOAL
 
         # Derive anchors
         Derive short search fragments, no question marks, as if the user was googling it using key terms:
-          - 1-5 anchors.
+          - maximum 2 anchors.
           - 2 to 5 meaningful terms per anchor (hyphenated terms count as one).
           - Range from broad to specific.
-          - IF fact descriptors NOT EMPTY, THEN include at least 2 observational fragments using
+          - IF fact descriptors NOT EMPTY, THEN include 1 observational fragments using
             color, texture, or location (e.g. "green slime cooling tower", "orange sludge basin").
 
         # Derive variants
-        Produce other ways a user would actually query for this fact-and-angle,
+        Produce other ways than the question and the anchors a user would actually query for this fact-and-angle,
         including alternative phrasings, symptom descriptions, partial utterances, and frustrated or colloquial expressions.
         Variants do not need to be grammatically complete questions:
           - Ownership rule: every variant must be fully answerable by THIS row's
@@ -131,8 +131,8 @@ GOAL
             - What row's variants should ask What/Which/Is-it;
             - How row's variants should ask How/By-what-mechanism;
             - Why row's variants should ask Why/What-causes. A variant phrased in the wrong angle steals recall from the correct row.
-          - 4 to 7 variants:
-            - At least 2 variants must use lay or operator slang, not technical terms.
+          - 3 to 7 variants:
+            - At least 1 variants must use lay or operator slang, not technical terms.
               Use "bugs" not "microorganisms"; "slime" not "biofilm" (when the user
               would call it that); "shock" not "high-dose biocide treatment";
               "chlorine's not working" not "reduced biocide effectiveness";
@@ -176,17 +176,14 @@ EXAMPLES
             "question": "What is a makeup meter log for a closed loop system?",
             "variants": [
               "Do I need to keep makeup water records for my closed loop?",
-              "What does a makeup meter log tell you?",
-              "I heard about makeup meter logs, what are they for?",
-              "Should I be tracking makeup water on my closed loop system?",
-              "What records do inspectors check for closed loop systems?"
+              "What does a makeup meter log actually tell you?",
+              "makeup meter records inspector wants",
+              "Should I be tracking water added to my closed loop?",
+              "what records do they check on closed loops"
             ],
             "anchors": [
               "makeup meter log",
-              "closed loop water records",
-              "makeup water tracking",
-              "closed loop compliance records",
-              "water usage closed loop"
+              "closed loop compliance records"
             ]
           },
           {
@@ -194,18 +191,15 @@ EXAMPLES
             "angle": "Why",
             "question": "Why do makeup meter logs matter for closed loop compliance?",
             "variants": [
-              "Why would high makeup water readings be a problem in a closed loop?",
-              "What does it mean if my closed loop is using a lot of makeup water?",
-              "Why should a tight closed loop show near-zero makeup water?",
-              "I noticed my makeup water usage is high — should I be worried?",
-              "Why do inspectors care about makeup water readings?"
+              "Why would high makeup water be a problem on a closed loop?",
+              "closed loop drinking water lately, should I worry",
+              "Why should a tight loop need almost no makeup?",
+              "makeup readings high after last month",
+              "Why do inspectors care about closed loop water usage?"
             ],
             "anchors": [
               "high makeup water closed loop",
-              "closed loop losing water",
-              "near-zero makeup water",
-              "makeup water too high",
-              "closed loop water loss"
+              "closed loop losing water"
             ]
           }
         ]
@@ -227,19 +221,15 @@ EXAMPLES
             "angle": "What",
             "question": "What is chlorine as a biocide in cooling systems?",
             "variants": [
-              "What forms of chlorine can I use in my cooling tower?",
-              "I heard chlorine is used in cooling water — how does it work?",
-              "Is chlorine a good biocide for my cooling system?",
-              "Does pH affect how well chlorine kills bacteria?",
-              "Why is chlorine the most common cooling tower biocide?",
-              "What types of chlorine products are used for cooling water?"
+              "What forms of chlorine can I run in my cooling tower?",
+              "Is chlorine a good biocide for cooling water?",
+              "chlorine not killing bugs at high pH",
+              "What types of chlorine products are used for cooling water?",
+              "Why does my chlorine stop working when pH climbs?"
             ],
             "anchors": [
               "chlorine cooling tower biocide",
-              "chlorine oxidizing biocide",
-              "chlorine effectiveness pH",
-              "hypochlorite cooling system",
-              "most common cooling tower chemical"
+              "chlorine effectiveness pH"
             ]
           },
           {
@@ -247,18 +237,15 @@ EXAMPLES
             "angle": "What",
             "question": "What is bromine used for in cooling systems?",
             "variants": [
-              "When would I use bromine instead of chlorine in a cooling tower?",
+              "When would I use bromine instead of chlorine?",
               "Is bromine better than chlorine for high-pH systems?",
-              "What makes bromine a good biocide for alkaline water?",
-              "I heard bromine works better at high pH — is that right?",
+              "bromine cooling tower alkaline water",
+              "running high pH and chlorine isn't cutting it",
               "How does bromine differ from chlorine as a biocide?"
             ],
             "anchors": [
-              "bromine cooling tower",
-              "bromine alkaline systems",
-              "bromine vs chlorine pH",
-              "oxidizing biocide alkaline water",
-              "bromine biocide high pH"
+              "bromine alkaline cooling systems",
+              "bromine vs chlorine pH"
             ]
           },
           {
@@ -266,18 +253,88 @@ EXAMPLES
             "angle": "What",
             "question": "What is chlorine dioxide as a cooling system biocide?",
             "variants": [
-              "I heard about chlorine dioxide for cooling towers — what is it?",
-              "How does chlorine dioxide differ from regular chlorine?",
-              "Does pH affect chlorine dioxide the same way it affects chlorine?",
-              "Why would someone use chlorine dioxide instead of chlorine?",
-              "What do I need to know about using chlorine dioxide in my system?"
+              "What's chlorine dioxide do that regular chlorine doesn't?",
+              "Does pH affect chlorine dioxide like it does chlorine?",
+              "chlorine dioxide on-site generation cooling",
+              "Why would I use chlorine dioxide instead of bleach?",
+              "What do I need to know before using ClO2?"
             ],
             "anchors": [
-              "chlorine dioxide biocide",
               "chlorine dioxide cooling tower",
-              "on-site chlorine dioxide generation",
-              "chlorine dioxide vs chlorine",
-              "pH-insensitive oxidizing biocide"
+              "on-site chlorine dioxide generation"
+            ]
+          }
+        ]
+
+  EXAMPLE @subject-grounding:
+    notes: |
+      Two sibling sections under the same parent topic. Each section explains
+      ONE mechanism by which resistance develops, but the BODY of each could
+      easily be re-framed as "why does resistance develop?" — drifting up to
+      the parent concept and producing duplicate rows across siblings.
+
+      The correct grounding pins each question to the section's specific
+      mechanism (sublethal exposure / high oxidant demand), not the parent
+      effect (resistance / tolerance). After grounding, the rows from these
+      two sections are clearly distinct and cover different facts.
+    input:
+      $section_1: |
+        ### Sublethal Exposure Patterns
+        Insufficient concentration or contact time creates the fundamental
+        driver of tolerance development. Underfeeding systems, intermittent
+        feed gaps, or short exposure windows leave survivors that become the
+        seed population for regrowth.
+
+      $section_2: |
+        ### High Oxidant Demand
+        High oxidant demand from organics, deposits, or corrosion products
+        consumes available disinfectant before it reaches target organisms.
+        The result is repeated cycles where some microorganisms survive,
+        reproduce, and pass on their survival traits to the next generation.
+    output:
+      # Wrong (drift to parent — both sections would emit this):
+      #   question: "Why does biocide tolerance develop in cooling systems?"
+      #   → fails subject-grounding test: removing the section title, this
+      #     question could equally describe either sibling section.
+      #
+      # Right (grounded to each section's specific mechanism):
+      $rows_for_section_1: |
+        [
+          {
+            "descriptors": [],
+            "angle": "Why",
+            "question": "Why does insufficient biocide concentration cause tolerance?",
+            "variants": [
+              "Why does underfeeding biocide make bugs come back stronger?",
+              "what happens to bacteria that survive a weak dose",
+              "Why is short contact time a problem for biocide effectiveness?",
+              "intermittent feed gap survivors regrowth",
+              "biocide dripped low for a few hours, now slime is back",
+              "Why do survivors of underdosing seed regrowth?"
+            ],
+            "anchors": [
+              "underfeeding biocide tolerance",
+              "intermittent feed gaps survivors"
+            ]
+          }
+        ]
+      $rows_for_section_2: |
+        [
+          {
+            "descriptors": [],
+            "angle": "Why",
+            "question": "Why does high oxidant demand cause biocide tolerance?",
+            "variants": [
+              "Why does my chlorine get used up before reaching the bugs?",
+              "oxidant demand from organics consuming chlorine",
+              "Why do organics and deposits drag down disinfectant?",
+              "biocide gone before it can do its job",
+              "switched chemistries but corrosion products still eating residual",
+              "Why does heavy organic loading defeat my biocide?"
+            ],
+            "anchors": [
+              "high oxidant demand organics",
+              "disinfectant consumed before target"
             ]
           }
         ]
@@ -297,20 +354,16 @@ EXAMPLES
             "angle": "What",
             "question": "What algae grow in cooling towers?",
             "variants": [
-              "What is the green stuff growing on my cooling tower walls?",
-              "There is green slimy mat on my tower basin — what is it?",
-              "Green growth keeps appearing on my wet tower surfaces",
-              "What causes green mats on cooling tower fill?",
+              "green slimy stuff on my cooling tower walls",
+              "There's a green mat all over my tower basin — what is it?",
               "What types of algae grow in open cooling towers?",
-              "Why do I keep seeing green growth in my tower basin?"
+              "green growth keeps coming back on the fill",
+              "fill and screens clogged with green crud",
+              "Why do I keep seeing green growth in sunny spots?"
             ],
             "anchors": [
               "green algae cooling tower",
-              "green mats tower basin",
-              "green slime wet surfaces",
-              "Chlorella cooling tower",
-              "algae clogging tower fill",
-              "green growth tower walls"
+              "green slime tower basin"
             ]
           }
         ]
@@ -330,16 +383,13 @@ EXAMPLES
             "question": "Who handles pricing for the Nereus platform?",
             "variants": [
               "How do I get pricing for Nereus?",
-              "Where can I find out how much Nereus costs?",
-              "Is there a price list for the Nereus platform?",
-              "Who should I contact about plans and rates?",
+              "how much does Nereus cost",
+              "Is there a price list for Nereus?",
+              "Who do I talk to about plans and rates?",
               "Can I get a quote for Nereus?"
             ],
             "anchors": [
               "Nereus pricing contact",
-              "Nereus plans rates",
-              "pricing email",
-              "pricing phone number",
               "how to get Nereus pricing"
             ]
           }
@@ -359,15 +409,12 @@ EXAMPLES
             "question": "What is the recommended pH setpoint for cooling systems?",
             "variants": [
               "What pH should I run my cooling tower at?",
-              "What's the target pH for open recirculating cooling water?",
-              "Is there a recommended pH for cooling system water?"
+              "pH target open recirculating",
+              "Is there a recommended pH for cooling water?"
             ],
             "anchors": [
               "cooling tower pH setpoint",
-              "recommended pH cooling water",
-              "open recirculating pH target",
-              "cooling system pH 7.2",
-              "pH setpoint cooling tower"
+              "recommended pH cooling water"
             ]
           }
         ]

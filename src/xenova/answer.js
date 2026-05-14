@@ -1,6 +1,6 @@
 "use strict";
 
-const { pipeline } = require('@xenova/transformers');
+const pipeline = require("./pipeline");
 const CONFIG = require("./config");
 
 /**
@@ -19,6 +19,10 @@ const CONFIG = require("./config");
  * This is a strictly extractive process — the returned answer must exist
  * verbatim within the context and no generative reasoning or synthesis
  * is performed.
+ *
+ * Loads the transformers.js pipeline via the {@link pipeline} CJS-to-ESM
+ * bridge — `@xenova/transformers` is ESM-only and cannot be `require()`'d
+ * directly. The bridge is transparent to callers.
  *
  * @param {string} question
  * Natural language question to be answered.
@@ -70,7 +74,26 @@ const CONFIG = require("./config");
  * @throws {Error}
  * Throws if the question-answering pipeline cannot be initialized.
  */
-let model;
+// ── Singleton storage ──────────────────────────────────────────────────────
+// We memoize the *promise* (not the resolved pipeline) so that concurrent
+// first-callers all share the same in-flight load. See vectorize.js for
+// the full design rationale.
+let modelPromise;
+
+/**
+ * @function ensureQuestionAnswering
+ * @description
+ * Internal helper. Returns the resolved question-answering pipeline,
+ * loading it lazily on first call and reusing the cached promise
+ * thereafter.
+ *
+ * @param {string} [questionAnsweringModel] Model ID override.
+ * @returns {Promise<Function>} Resolved Transformers.js pipeline.
+ */
+const ensureQuestionAnswering = (questionAnsweringModel) => (
+  modelPromise || (modelPromise = createQuestionAnswering(questionAnsweringModel))
+);
+
 const answer = async (
   question,
   context,
@@ -83,9 +106,7 @@ const answer = async (
 ) => {
 
   // Init question answering engine if needed.
-  questionAnswering || (
-    questionAnswering = model || (model = await createQuestionAnswering(questionAnsweringModel))
-  );
+  questionAnswering || (questionAnswering = await ensureQuestionAnswering(questionAnsweringModel));
 
   return await questionAnswering(
     question.normalize("NFC").trim(),
@@ -95,7 +116,12 @@ const answer = async (
 }
 
 const createQuestionAnswering = answer.createQuestionAnswering = async questionAnsweringModel => (
-  await pipeline("question-answering", questionAnsweringModel || CONFIG.questionAnsweringModel)
+  // quantized: true selects the smaller quantized ONNX weights instead of
+  // Transformers.js's full-precision default. See vectorize.js / classify.js
+  // for the rationale — same tradeoff applies here.
+  await pipeline("question-answering", questionAnsweringModel || CONFIG.questionAnsweringModel, {
+    quantized: true,
+  })
 );
 
 /**
@@ -125,9 +151,7 @@ answer.batch = async (
     ...other
   } = {}
 ) => {
-  questionAnswering || (
-    questionAnswering = model || (model = await createQuestionAnswering(questionAnsweringModel))
-  );
+  questionAnswering || (questionAnswering = await ensureQuestionAnswering(questionAnsweringModel));
   const inputs = pairs.map(({ question, context }) => ({
     question: question.normalize("NFC").trim(),
     context:  context.normalize("NFC").trim(),
@@ -135,6 +159,31 @@ answer.batch = async (
   const results = await questionAnswering(inputs, { topk, ...other });
   // Pipeline returns an array of result objects for batch input.
   return Array.isArray(results[0]) ? results.map(r => r[0]) : results;
+};
+
+// ---------------------------------------------------------------------------
+// answer.prewarm
+// ---------------------------------------------------------------------------
+
+/**
+ * @function answer.prewarm
+ * @async
+ * @description
+ * Eagerly populate the module-level question-answering singleton. See
+ * {@link vectorize.prewarm} for full design notes — same semantics.
+ *
+ * @param {object} [options]
+ * @param {Function} [options.questionAnswering]
+ *   Pre-instantiated pipeline. If provided, no load is performed.
+ * @param {string} [options.questionAnsweringModel]
+ *   Model ID override. Ignored when `options.questionAnswering` is provided.
+ * @returns {Promise<Function>} The resolved (or supplied) pipeline.
+ */
+answer.prewarm = async ({ questionAnswering, questionAnsweringModel } = {}) => {
+  if (questionAnswering) {
+    return await (modelPromise = Promise.resolve(questionAnswering));
+  }
+  return await ensureQuestionAnswering(questionAnsweringModel);
 };
 
 /**

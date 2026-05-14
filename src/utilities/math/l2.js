@@ -27,17 +27,23 @@
 const l2SquaredUnsafe = (v, dim = v.length, offset = 0) => {
   if (!(dim > 0)) return 0;
 
-  let d = 0, o = offset || 0, res = 0;
-  for (const e = dim - 4; d < e; d += 4, o += 4) {
-    res += v[o] * v[o]
-      + v[o + 1] * v[o + 1]
-      + v[o + 2] * v[o + 2]
-      + v[o + 3] * v[o + 3];
+  let d = 0, o = offset || 0, res = 0, r0 = 0, r1 = 0, r2 = 0, r3 = 0, c;
+  for (const e = dim & ~3; d < e; d += 4) {
+    r0 += (c = v[o++]) * c;
+    r1 += (c = v[o++]) * c;
+    r2 += (c = v[o++]) * c;
+    r3 += (c = v[o++]) * c;
   }
+  res = r0 + r1 + r2 + r3;
 
   // Remainder if dim is not a multiple of 4.
-  for (d > dim && (d -= 4, o -= 4); d !== dim; ++d, ++o) {
-    res += v[o] * v[o];
+  switch (dim & 3) {
+    case 3:
+      res += (c = v[o + 2]) * c;
+    case 2:
+      res += (c = v[o + 1]) * c;
+    case 1:
+      res += (c = v[o]) * c;
   }
 
   return res;

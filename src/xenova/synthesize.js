@@ -1,4 +1,6 @@
-const { pipeline } = require('@xenova/transformers');
+"use strict";
+
+const pipeline = require("./pipeline");
 const CONFIG = require("./config");
 
 /**
@@ -13,6 +15,10 @@ const CONFIG = require("./config");
  * The function supports lazy initialization: if a preloaded pipeline instance 
  * is not provided via the `synthesizer` parameter, it will automatically 
  * initialize one using the specified or default model configuration.
+ *
+ * Loads the transformers.js pipeline via the {@link pipeline} CJS-to-ESM
+ * bridge — `@xenova/transformers` is ESM-only and cannot be `require()`'d
+ * directly. The bridge is transparent to callers.
  *
  * @param {string} finalPrompt
  * The fully constructed prompt or instruction to be processed by the model.
@@ -54,7 +60,25 @@ const CONFIG = require("./config");
  * @throws {Error}
  * Throws if the model fails to load or the inference pipeline encounters an error.
  */
-let model;
+// ── Singleton storage ──────────────────────────────────────────────────────
+// We memoize the *promise* (not the resolved pipeline) so that concurrent
+// first-callers all share the same in-flight load. See vectorize.js for
+// the full design rationale.
+let modelPromise;
+
+/**
+ * @function ensureSynthesizer
+ * @description
+ * Internal helper. Returns the resolved synthesizer pipeline, loading it
+ * lazily on first call and reusing the cached promise thereafter.
+ *
+ * @param {string} [text2textModel] Model ID override.
+ * @returns {Promise<Function>} Resolved Transformers.js pipeline.
+ */
+const ensureSynthesizer = (text2textModel) => (
+  modelPromise || (modelPromise = createSynthesizer(text2textModel))
+);
+
 const synthesize = async (
   prompt,
   { 
@@ -74,10 +98,8 @@ const synthesize = async (
     ...other
   } = {}
 ) => {
-  // Init question text2text engine if needed.
-  synthesizer || (
-    synthesizer = model || (model = await createSynthesizer(text2textModel))
-  );
+  // Init text2text engine if needed.
+  synthesizer || (synthesizer = await ensureSynthesizer(text2textModel));
 
   // Compute text generation.
   const result = await synthesizer(prompt, {
@@ -99,7 +121,11 @@ const synthesize = async (
 };
 
 const createSynthesizer = synthesize.createSynthesizer = async text2textModel => (
-  await pipeline("text2text-generation", text2textModel || CONFIG.text2textModel)
+  // quantized: true selects the smaller quantized ONNX weights. See
+  // vectorize.js / classify.js for the rationale — same tradeoff applies.
+  await pipeline("text2text-generation", text2textModel || CONFIG.text2textModel, {
+    quantized: true,
+  })
 );
 
 /**
@@ -141,9 +167,7 @@ synthesize.batch = async (
     ...other
   } = {}
 ) => {
-  synthesizer || (
-    synthesizer = model || (model = await createSynthesizer(text2textModel))
-  );
+  synthesizer || (synthesizer = await ensureSynthesizer(text2textModel));
   const results = await synthesizer(prompts, {
     min_length,
     max_length: max_new_tokens,
@@ -160,6 +184,31 @@ synthesize.batch = async (
   });
   // Pipeline returns [[{generated_text}], [{generated_text}], ...] for batch input.
   return results.map(r => (Array.isArray(r) ? r[0] : r).generated_text);
+};
+
+// ---------------------------------------------------------------------------
+// synthesize.prewarm
+// ---------------------------------------------------------------------------
+
+/**
+ * @function synthesize.prewarm
+ * @async
+ * @description
+ * Eagerly populate the module-level synthesizer singleton. See
+ * {@link vectorize.prewarm} for full design notes — same semantics.
+ *
+ * @param {object} [options]
+ * @param {Function} [options.synthesizer]
+ *   Pre-instantiated pipeline. If provided, no load is performed.
+ * @param {string} [options.text2textModel]
+ *   Model ID override. Ignored when `options.synthesizer` is provided.
+ * @returns {Promise<Function>} The resolved (or supplied) pipeline.
+ */
+synthesize.prewarm = async ({ synthesizer, text2textModel } = {}) => {
+  if (synthesizer) {
+    return await (modelPromise = Promise.resolve(synthesizer));
+  }
+  return await ensureSynthesizer(text2textModel);
 };
 
 /**

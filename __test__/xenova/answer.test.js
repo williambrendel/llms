@@ -4,23 +4,23 @@
  * @file answer.test.js
  * @brief Unit tests for the answer() extractive QA function.
  *
- * The @xenova/transformers pipeline is mocked at the module level.
+ * The pipeline wrapper is mocked at the module level.
  * answer() is re-required after mock registration so the module-level
  * singleton starts fresh for each describe block via jest.resetModules().
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Mock @xenova/transformers
+// Mock the pipeline wrapper (CJS-to-ESM bridge for @xenova/transformers)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const mockQAPipeline = jest.fn();
 
-jest.mock("@xenova/transformers", () => ({
-  pipeline: jest.fn(async (task) => {
+jest.mock("../../src/xenova/pipeline", () =>
+  jest.fn(async (task) => {
     if (task === "question-answering") return mockQAPipeline;
     throw new Error(`Unexpected pipeline task: ${task}`);
-  }),
-}));
+  })
+);
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -110,19 +110,20 @@ describe("answer — basic QA", () => {
 describe("answer — lazy initialization", () => {
   test("initializes pipeline when no questionAnswering provided", async () => {
     jest.resetModules();
-    const { pipeline } = require("@xenova/transformers");
+    const pipeline = require("../../src/xenova/pipeline");
     const freshAnswer = require("../../src/xenova/answer");
     mockQAPipeline.mockResolvedValue(makeQAResult());
     await freshAnswer("What?", "Context.");
     expect(pipeline).toHaveBeenCalledWith(
       "question-answering",
-      CONFIG.questionAnsweringModel
+      CONFIG.questionAnsweringModel,
+      expect.anything()
     );
   });
 
   test("reuses singleton on second call — pipeline init called once", async () => {
     jest.resetModules();
-    const { pipeline } = require("@xenova/transformers");
+    const pipeline = require("../../src/xenova/pipeline");
     const freshAnswer = require("../../src/xenova/answer");
     mockQAPipeline.mockResolvedValue(makeQAResult());
     await freshAnswer("Q1?", "Context 1.");
@@ -132,7 +133,7 @@ describe("answer — lazy initialization", () => {
 
   test("provided questionAnswering skips pipeline init", async () => {
     jest.resetModules();
-    const { pipeline } = require("@xenova/transformers");
+    const pipeline = require("../../src/xenova/pipeline");
     const freshAnswer = require("../../src/xenova/answer");
     await freshAnswer("What?", "Context.", { questionAnswering: mockQAPipeline });
     expect(pipeline).not.toHaveBeenCalled();
@@ -150,20 +151,21 @@ describe("answer.createQuestionAnswering", () => {
 
   test("calls pipeline with question-answering task and provided model", async () => {
     jest.resetModules();
-    const { pipeline } = require("@xenova/transformers");
+    const pipeline = require("../../src/xenova/pipeline");
     const freshAnswer = require("../../src/xenova/answer");
     await freshAnswer.createQuestionAnswering("custom/qa-model");
-    expect(pipeline).toHaveBeenCalledWith("question-answering", "custom/qa-model");
+    expect(pipeline).toHaveBeenCalledWith("question-answering", "custom/qa-model", expect.anything());
   });
 
   test("falls back to CONFIG model when none provided", async () => {
     jest.resetModules();
-    const { pipeline } = require("@xenova/transformers");
+    const pipeline = require("../../src/xenova/pipeline");
     const freshAnswer = require("../../src/xenova/answer");
     await freshAnswer.createQuestionAnswering();
     expect(pipeline).toHaveBeenCalledWith(
       "question-answering",
-      CONFIG.questionAnsweringModel
+      CONFIG.questionAnsweringModel,
+      expect.anything()
     );
   });
 });

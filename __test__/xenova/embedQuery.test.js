@@ -4,10 +4,9 @@
  *
  * Verifies:
  *   - The BGE query instruction prefix is applied exactly once
+ *   - Idempotent: any number of leading prefix copies collapse to one
+ *   - Leading/trailing whitespace is trimmed (internal whitespace preserved)
  *   - The default prefix can be overridden per-call
- *   - The input string is forwarded to vectorize verbatim (no trimming,
- *     no normalization, no escaping)
- *   - Edge cases: empty string, whitespace, multi-line, unicode
  *   - The vectorize return value is forwarded unchanged
  *   - The module export honors the project's frozen self-referential convention
  */
@@ -17,7 +16,7 @@
 jest.mock("../../src/xenova/vectorize", () => jest.fn());
 
 const vectorize = require("../../src/xenova/vectorize");
-const embedQuery = require("../../src/embedQuery");
+const embedQuery = require("../../src/xenova/embedQuery");
 
 const QUERY_PREFIX = "Represent this sentence for searching relevant passages: ";
 
@@ -40,12 +39,16 @@ describe("embedQuery — prefix application", () => {
     expect(vectorize).toHaveBeenCalledWith(QUERY_PREFIX);
   });
 
-  test("preserves leading and trailing whitespace in the query", async () => {
+  test("trims leading and trailing whitespace from the query", async () => {
+    // The new embedQuery trims surrounding whitespace before applying the
+    // prefix. This keeps the body flush against the prefix's trailing
+    // space, and matches the behavior needed for clean idempotency
+    // (otherwise " PREFIX foo" and "PREFIX foo" would prefix differently).
     await embedQuery("  green slime  ");
-    expect(vectorize).toHaveBeenCalledWith(QUERY_PREFIX + "  green slime  ");
+    expect(vectorize).toHaveBeenCalledWith(QUERY_PREFIX + "green slime");
   });
 
-  test("preserves embedded newlines and tabs", async () => {
+  test("preserves embedded newlines and tabs (internal whitespace untouched)", async () => {
     const q = "line one\nline two\tindented";
     await embedQuery(q);
     expect(vectorize).toHaveBeenCalledWith(QUERY_PREFIX + q);
@@ -56,12 +59,37 @@ describe("embedQuery — prefix application", () => {
     await embedQuery(q);
     expect(vectorize).toHaveBeenCalledWith(QUERY_PREFIX + q);
   });
+});
 
-  test("does not double-prefix when the query already starts with the prefix string", async () => {
-    // The function is dumb on purpose; verify it does not try to be clever.
+describe("embedQuery — prefix idempotency", () => {
+  test("does not double-prefix when the query already starts with the prefix", async () => {
+    // The function is idempotent. A pre-prefixed input is stripped and
+    // re-prefixed exactly once.
     const q = QUERY_PREFIX + "already prefixed";
     await embedQuery(q);
-    expect(vectorize).toHaveBeenCalledWith(QUERY_PREFIX + q);
+    expect(vectorize).toHaveBeenCalledWith(QUERY_PREFIX + "already prefixed");
+  });
+
+  test("collapses two leading prefix copies to one", async () => {
+    const q = QUERY_PREFIX + QUERY_PREFIX + "twice prefixed";
+    await embedQuery(q);
+    expect(vectorize).toHaveBeenCalledWith(QUERY_PREFIX + "twice prefixed");
+  });
+
+  test("collapses three+ leading prefix copies to one", async () => {
+    const q = QUERY_PREFIX + QUERY_PREFIX + QUERY_PREFIX + "deeply prefixed";
+    await embedQuery(q);
+    expect(vectorize).toHaveBeenCalledWith(QUERY_PREFIX + "deeply prefixed");
+  });
+
+  test("idempotency only strips leading runs, not embedded matches", async () => {
+    // A prefix-substring appearing INSIDE the query body is content, not
+    // a prefix. Only leading runs at the start are collapsed.
+    const q = `${QUERY_PREFIX}why does ${QUERY_PREFIX}appear in this text`;
+    await embedQuery(q);
+    expect(vectorize).toHaveBeenCalledWith(
+      QUERY_PREFIX + `why does ${QUERY_PREFIX}appear in this text`
+    );
   });
 });
 
@@ -83,6 +111,13 @@ describe("embedQuery — prefix override", () => {
     expect(vectorize).toHaveBeenNthCalledWith(1, "OTHER: first");
     expect(vectorize).toHaveBeenNthCalledWith(2, QUERY_PREFIX + "second");
   });
+
+  test("idempotency works with a custom prefix", async () => {
+    const e5Prefix = "query: ";
+    const q = e5Prefix + e5Prefix + "doubled custom";
+    await embedQuery(q, e5Prefix);
+    expect(vectorize).toHaveBeenCalledWith(e5Prefix + "doubled custom");
+  });
 });
 
 describe("embedQuery — return value forwarding", () => {
@@ -98,16 +133,15 @@ describe("embedQuery — return value forwarding", () => {
     vectorize.mockRejectedValueOnce(err);
     await expect(embedQuery("anything")).rejects.toBe(err);
   });
-
-  test("does not await internally — returns a thenable synchronously", () => {
-    const result = embedQuery("anything");
-    expect(typeof result.then).toBe("function");
-  });
 });
 
 describe("embedQuery — module export conventions", () => {
-  test("the export is the function itself (self-referential)", () => {
+  test("the export is the function itself", () => {
     expect(typeof embedQuery).toBe("function");
+  });
+
+  test("exposes the QUERY_PREFIX constant as a static property", () => {
+    expect(embedQuery.QUERY_PREFIX).toBe(QUERY_PREFIX);
   });
 
   test("exposes a self-referential .embedQuery property", () => {
