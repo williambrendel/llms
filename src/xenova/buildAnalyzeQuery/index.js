@@ -34,25 +34,38 @@ const collapseRepeatedPunctuation = require("./collapseRepeatedPunctuation");
  *
  *   1. Trim raw input.
  *   2. `detectFrustration` on the raw (trimmed) input. MUST run
- *      before collapseRepeatedPunctuation, because the repeated-
- *      punctuation signal is destroyed by collapse.
- *   3. `collapseRepeatedPunctuation` — normalize "!!!" → "!" etc.
- *   4. `peelGreeting` — strip standalone greetings, return cleaned
+ *      before spell correction AND before collapseRepeatedPunctuation,
+ *      because both destroy the very signals frustration looks for
+ *      (caps, repeated punctuation, no-apostrophe contractions).
+ *   3. Spell correction via the optional caller-supplied `spellEngine`.
+ *      Fixes typos, expands no-apostrophe contractions (`wont` →
+ *      `won't`), and normalizes punctuation. Skipped when no engine
+ *      is provided.
+ *   4. `collapseRepeatedPunctuation` — normalize "!!!" → "!" etc.
+ *      Belt-and-suspenders: SpellEngine already collapses repeated
+ *      punctuation internally, but running this again is a cheap
+ *      no-op that keeps the pipeline correct when no engine is wired.
+ *   5. `peelGreeting` — strip standalone greetings, return cleaned
  *      query and greeting flag.
- *   5. If cleaned query is empty (greeting-only input), return early
+ *   6. If cleaned query is empty (greeting-only input), return early
  *      with `segments: []`.
- *   6. `isMultiPart` on cleaned query.
- *   7. `greedySplit` if multi-part, else single-segment fast path.
- *   8. Classify each segment.
+ *   7. `isMultiPart` on cleaned query.
+ *   8. `greedySplit` if multi-part, else single-segment fast path.
+ *   9. Classify each segment.
  *
  * Cost model:
- *   - Steps 1-5 are pure-regex, microsecond-fast.
- *   - Step 6 is pure-regex.
- *   - Step 7 is pure-regex.
- *   - Step 8 invokes the classifier per segment. Each BGE
+ *   - Steps 1-2 are pure-regex, microsecond-fast.
+ *   - Step 3 (when engine is provided) is dictionary lookup +
+ *     occasional nspell suggestion per word token. Typically
+ *     sub-millisecond for short queries; can spike to a few ms for
+ *     queries containing words the nspell dictionary must `suggest()`
+ *     for. Skipped entirely when no engine is wired.
+ *   - Steps 4-7 are pure-regex.
+ *   - Step 8 is pure-regex.
+ *   - Step 9 invokes the classifier per segment. Each BGE
  *     classification is ~5-30ms warm; NLI fallback adds ~100-300ms
  *     when triggered.
- *   - Greeting-only inputs cost essentially nothing past step 5.
+ *   - Greeting-only inputs cost essentially nothing past step 6.
  *
  * The factory is async (builds the classifier at boot, which embeds
  * anchors). The returned analyzer is async per call (may embed
@@ -74,9 +87,21 @@ const collapseRepeatedPunctuation = require("./collapseRepeatedPunctuation");
  *     clearly matches SUPPORT or CONVERSATIONAL.
  *   - `{ classes: { TECHNICAL: { anchors: [...] } } }` → Mode 1 with
  *     caller-supplied domain anchors. Sharper classification.
+ * @param {object} [options.spellEngine]
+ *   Optional spell-correction engine implementing `correct(text) →
+ *   text`. When provided, the analyzer applies `spellEngine.correct`
+ *   to the raw input AFTER frustration detection and BEFORE
+ *   greeting peel. Fixes typos, expands no-apostrophe contractions
+ *   (e.g. `wont` → `won't`), and normalizes punctuation. The
+ *   corrected form is what the analyzer embeds, classifies, and
+ *   surfaces back to the caller via the `corrected` output field —
+ *   so dispatchers can echo "you asked: <corrected>" to give the
+ *   user visibility into autocorrect. Skipped when not provided;
+ *   pipeline runs as if the user typed exactly what they meant.
  *
  * @returns {Promise<(queryString: string, queryVec?: Float32Array) => Promise<{
  *   query:         string,
+ *   corrected:     string,
  *   greeting:      boolean,
  *   frustration:   {
  *     score:               number,
@@ -96,19 +121,27 @@ const collapseRepeatedPunctuation = require("./collapseRepeatedPunctuation");
  *   }>
  * }>>}
  *   Async analyzer closure. Inputs:
- *   - `queryString` — required. The spellchecked user query.
+ *   - `queryString` — required. The raw user query (NOT pre-corrected;
+ *     the analyzer handles spell correction internally if a spellEngine
+ *     was provided to the factory).
  *   - `queryVec` — optional. The query's embedding (caller's
  *     dispatcher pre-embeds it once for both classification and
  *     downstream retrieval). When omitted, the analyzer embeds the
  *     cleaned query itself. NOTE: queryVec is only reused when the
- *     cleaned query equals the raw query (no collapse, no greeting
- *     peel happened). Otherwise the analyzer freshly embeds the
- *     cleaned form, since the pre-computed embedding is for the
- *     wrong string.
+ *     cleaned query equals the raw query (no spell correction, no
+ *     collapse, no greeting peel happened). Otherwise the analyzer
+ *     freshly embeds the cleaned form, since the pre-computed
+ *     embedding is for the wrong string.
  *
  *   Output:
- *   - `query` — the cleaned query (post-collapse, post-greeting-strip).
- *     Empty string when the input was greeting-only.
+ *   - `query` — the cleaned query (post-spell-correction, post-
+ *     collapse, post-greeting-strip). Empty string when the input
+ *     was greeting-only.
+ *   - `corrected` — the spell-corrected form of the raw input,
+ *     BEFORE greeting peel. Suitable for echoing back to the user
+ *     as "you asked: <corrected>" so they can see what autocorrect
+ *     did. Equals `raw` when no spellEngine was wired or when no
+ *     corrections fired.
  *   - `greeting` — true when the input contained any standalone
  *     greeting clause that was peeled.
  *   - `frustration` — emotion-marker analysis on the raw input.
@@ -123,7 +156,7 @@ const collapseRepeatedPunctuation = require("./collapseRepeatedPunctuation");
  *     The dispatcher uses `segments.length === 0` plus the flags to
  *     detect this case and respond with a pure-greeting reply.
  */
-const buildAnalyzeQuery = async (options) => {
+const buildAnalyzeQuery = async ({ spellEngine, ...options } = {}) => {
   const classify = await buildClassifier(options);
 
   const analyzeQuery = async (queryString, queryVec) => {
@@ -131,28 +164,43 @@ const buildAnalyzeQuery = async (options) => {
     const raw = (queryString || "").trim();
 
     // ── Step 2: detect frustration on RAW input ──────────────────────────
-    // The repeated-punctuation signal depends on the original "!!!" /
-    // "???" runs; collapsing first would destroy it. Other signals
-    // (caps ratio, keyword presence) are unaffected by collapse, but
-    // running everything on the same input keeps the analysis
-    // coherent.
+    // The repeated-punctuation, ALL-CAPS, and no-apostrophe-contraction
+    // signals all depend on the original form. Spell correction (next
+    // step) would expand "WONT" to "won't" and collapse "!!!" to "!" —
+    // erasing exactly the markers we need here.
     const frustration = detectFrustration(raw);
 
-    // ── Step 3: normalize repeated punctuation ───────────────────────────
+    // ── Step 3: spell correction (optional) ──────────────────────────────
+    // When the caller supplied a spellEngine to the factory, run it on
+    // the raw input. Fixes typos via domain dictionary + nspell, expands
+    // no-apostrophe contractions via the corrections map (e.g. "wont" →
+    // "won't"), and normalizes punctuation. The corrected form is what
+    // we use everywhere downstream AND what we surface to the caller as
+    // the `corrected` output field — dispatchers can echo it back to
+    // the user as "you asked: <corrected>" for autocorrect transparency.
+    const corrected = spellEngine ? spellEngine.correct(raw) : raw;
+
+    // ── Step 4: normalize repeated punctuation ───────────────────────────
     // "!!!" → "!", "???" → "?", "?!?!" → "?". Same-character and
     // cross-character terminal-punct runs both collapse. Non-terminal
     // punctuation (`,.;:`) only collapses adjacent same-char runs to
     // preserve structures like "e.g." and decimals.
-    const collapsed = collapseRepeatedPunctuation(raw);
+    //
+    // When SpellEngine ran (Step 3), it already collapsed repeated
+    // punctuation internally. Running it again is a no-op on already-
+    // normalized text; we keep this step so the pipeline produces the
+    // same `collapsed` shape regardless of whether spellEngine was
+    // wired.
+    const collapsed = collapseRepeatedPunctuation(corrected);
 
-    // ── Step 4: peel greetings from anywhere in the query ────────────────
+    // ── Step 5: peel greetings from anywhere in the query ────────────────
     // Returns the cleaned query AND a flag. "hello, what is pH?"
     // becomes "what is pH?" with greeting=true. "thanks for the
     // info" stays untouched (no peel — "thanks" is followed by
     // content, not standalone).
     const { greeting, query: cleaned } = peelGreeting(collapsed);
 
-    // ── Step 5: greeting-only fast path ──────────────────────────────────
+    // ── Step 6: greeting-only fast path ──────────────────────────────────
     // When the cleaned query is empty, there's no content to
     // classify. Return the flags and an empty segments array. The
     // dispatcher detects this case via `segments.length === 0 &&
@@ -161,6 +209,7 @@ const buildAnalyzeQuery = async (options) => {
     if (!cleaned) {
       return {
         query:         "",
+        corrected,
         greeting,
         frustration,
         multiPart:     false,
@@ -170,18 +219,19 @@ const buildAnalyzeQuery = async (options) => {
       };
     }
 
-    // ── Step 6: single-intent fast path ──────────────────────────────────
+    // ── Step 7: single-intent fast path ──────────────────────────────────
     // No multi-part signal → classify the cleaned query as one
     // segment. Reuse the caller's queryVec if provided AND if the
-    // cleaned query matches the raw query exactly (no collapse, no
-    // greeting peel happened) — otherwise the pre-computed embedding
-    // is for the wrong string.
+    // cleaned query matches the raw query exactly (no spell
+    // correction, no collapse, no greeting peel happened) —
+    // otherwise the pre-computed embedding is for the wrong string.
     if (!isMultiPart(cleaned)) {
       const canReuse = queryVec && cleaned === raw;
       const vec = canReuse ? queryVec : await embedQuery(cleaned);
       const classification = await classify(vec, cleaned);
       return {
         query:         cleaned,
+        corrected,
         greeting,
         frustration,
         multiPart:     false,
@@ -191,7 +241,7 @@ const buildAnalyzeQuery = async (options) => {
       };
     }
 
-    // ── Step 7: multi-part path — try greedy split ───────────────────────
+    // ── Step 8: multi-part path — try greedy split ───────────────────────
     const pieces = greedySplit(cleaned);
 
     // Greedy failed: isMultiPart said true but the regex couldn't
@@ -205,6 +255,7 @@ const buildAnalyzeQuery = async (options) => {
       const classification = await classify(vec, cleaned);
       return {
         query:         cleaned,
+        corrected,
         greeting,
         frustration,
         multiPart:     true,
@@ -226,6 +277,7 @@ const buildAnalyzeQuery = async (options) => {
 
     return {
       query:         cleaned,
+      corrected,
       greeting,
       frustration,
       multiPart:     true,

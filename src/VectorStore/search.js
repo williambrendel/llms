@@ -12,6 +12,7 @@ const {
   PIVOT_MIN_RESULTS,
   PIVOT_MIN_ANCHOR_SCORE,
   PIVOT_MAX_RESULTS,
+  MAX_CUT_INDEX,
 } = require("./constants");
 
 /**
@@ -83,6 +84,11 @@ const stripInternals = hits => {
  * @param {number}  [options.pivotMinResults=PIVOT_MIN_RESULTS]
  * @param {number}  [options.pivotMinAnchorScore=PIVOT_MIN_ANCHOR_SCORE]
  * @param {number}  [options.pivotMaxResults=PIVOT_MAX_RESULTS]
+ * @param {number}  [options.maxCutIndex=MAX_CUT_INDEX]
+ *   Forwarded to {@link adaptivePrune}. Defensive upper bound on
+ *   the post-prune candidate set size. Defaults to {@link MAX_CUT_INDEX}
+ *   (30), tuned to keep downstream rerank, pivot, and LLM-context
+ *   work bounded.
  *
  * @returns {Array<{ score: number, documentId: string, range: [number, number] }>}
  */
@@ -94,6 +100,7 @@ const search = (target, queryVec, {
   pivotMinResults       = PIVOT_MIN_RESULTS,
   pivotMinAnchorScore   = PIVOT_MIN_ANCHOR_SCORE,
   pivotMaxResults       = PIVOT_MAX_RESULTS,
+  maxCutIndex           = MAX_CUT_INDEX,
 } = {}) => {
   if (!(queryVec instanceof Float32Array)) {
     throw new Error("search: queryVec must be a Float32Array");
@@ -119,7 +126,7 @@ const search = (target, queryVec, {
 
   // ── 5. First-pass adaptive prune → candidate set ──────────────────────
   let candidateSet = allHits.slice();
-  adaptivePrune(candidateSet);
+  adaptivePrune(candidateSet, { maxCutIndex });
 
   if (candidateSet.length === 0) {
     // Adaptive prune emptied the set. Fall back to top MIN_OUTPUT_ROWS.

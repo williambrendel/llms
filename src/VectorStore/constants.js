@@ -161,6 +161,62 @@ const PIVOT_MIN_ANCHOR_SCORE = 0.7;
  */
 const PIVOT_MAX_RESULTS = 10;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Adaptive prune — ratio measure
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Default minimum ratio `prev_score / curr_score` for a consecutive
+ * pair to qualify as an elbow in {@link ratioEffectiveCount}. Used
+ * by {@link adaptivePrune} when the caller doesn't provide
+ * `options.minGap`.
+ *
+ * `1.5` is calibrated for cosine-similarity distributions. Real-world
+ * cosine scores typically produce consecutive ratios in the
+ * [1.0, 2.0] range even on visually peaky distributions (e.g. top
+ * score 0.866, second 0.540 → ratio 1.60). The default of `3` baked
+ * into `ratioEffectiveCount` itself is more conservative; this
+ * value is the working default for the search pipeline where the
+ * input is cosine.
+ *
+ * Lower values cut more aggressively; higher values require a
+ * sharper cliff. Tunable via `options.minGap` per call.
+ *
+ * @type {number}
+ */
+const RATIO_MIN_GAP = 1.5;
+
+/**
+ * Maximum number of candidates {@link adaptivePrune} considers as
+ * signal, regardless of what the entropy and ratio measures
+ * recommend. Acts as a defensive upper bound on the work done by
+ * downstream stages (rerank, pivot merge, safety rails) and on the
+ * eventual context size passed to the second-pass LLM.
+ *
+ * `30` balances two pressures:
+ *
+ *   - Above this, downstream LLM context starts costing meaningfully
+ *     more without producing better answers — once 30 sections are
+ *     candidates, the marginal one rarely changes the synthesis.
+ *   - Below this, narrow queries that legitimately match many
+ *     sections (broad topic in a tightly clustered corpus) would
+ *     get clipped before adaptive prune even gets to weigh in.
+ *
+ * Note: {@link MAX_OUTPUT_ROWS} caps the FINAL output at the safety-
+ * rails stage; `MAX_CUT_INDEX` is an EARLIER bound on what adaptive
+ * prune considers. The two serve distinct roles: this one bounds
+ * pipeline work, the other bounds downstream contract. They can
+ * disagree (e.g. `MAX_CUT_INDEX = 30, MAX_OUTPUT_ROWS = 20` →
+ * adaptive prune may produce up to 30, safety rails then trims to
+ * 20).
+ *
+ * Tunable via `options.maxCutIndex` per call to {@link adaptivePrune}
+ * or {@link search}.
+ *
+ * @type {number}
+ */
+const MAX_CUT_INDEX = 30;
+
 module.exports = Object.freeze({
   ABSOLUTE_FLOOR,
   MIN_OUTPUT_ROWS,
@@ -173,4 +229,6 @@ module.exports = Object.freeze({
   PIVOT_MIN_RESULTS,
   PIVOT_MIN_ANCHOR_SCORE,
   PIVOT_MAX_RESULTS,
+  RATIO_MIN_GAP,
+  MAX_CUT_INDEX,
 });

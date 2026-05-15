@@ -58,8 +58,8 @@ const candidateCentroid = (candidates, dim) => {
   const mean = new Float32Array(dim);
   const n = candidates.length;
   if (n === 0) return mean;
-  for (let c = 0, v; c !== n; ++c) {
-    v = candidates[c].bestVec;
+  for (let c = 0; c !== n; ++c) {
+    const v = candidates[c].bestVec;
     for (let i = 0; i !== dim; ++i) mean[i] += v[i];
   }
   const invN = 1 / n;
@@ -83,10 +83,12 @@ const buildRerankWeights = (query, centroid, dim) => {
   let weak = 0;
   for (let i = 0; i !== dim; ++i) {
     const w = query[i] * centroid[i];
-    w > 0 && (weights[i] = w) || (
-      weights[i] = 0,
-      ++weak
-    );
+    if (w > 0) {
+      weights[i] = w;
+    } else {
+      weights[i] = 0;
+      ++weak;
+    }
   }
   return { weights, weak };
 };
@@ -169,17 +171,51 @@ const rerank = (query, candidates, allHits, dim, rerankThreshold = RERANK_THRESH
   // Build the rerank input: candidate set + extension. Extension is
   // bounded by both a score ratio (anchored to the last candidate's
   // score) and a hard count cap.
+  //
+  // Dedup against the candidate set. Two regimes are handled:
+  //
+  //   - Real pipeline (post-pivot): candidates can include items not
+  //     present in `allHits` (drawn from a different sweep using the
+  //     anchor's bestVec) that share `documentId|range` with allHits
+  //     entries. Key-based dedup catches these.
+  //
+  //   - Pre-pivot / synthetic fixtures: candidates may be reference-
+  //     equal to entries in allHits (the historical case — candidates
+  //     was the top-N prefix of allHits). Identity-based dedup catches
+  //     these without requiring documentId/range to be present.
+  //
+  // We check both: a hit is skipped if its (documentId, range) key OR
+  // its object identity is already in the candidate set.
+  const keyOf = h =>
+    (typeof h.documentId === "string" && Array.isArray(h.range))
+      ? `${h.documentId}|${h.range[0]}|${h.range[1]}`
+      : null;
+
   const lastCandidateScore = candidates[candidates.length - 1].score;
   const extensionFloor     = lastCandidateScore * RERANK_EXTENSION_RATIO;
 
+  const candidateKeys     = new Set();
+  const candidateIdentity = new Set();
+  for (let i = 0; i !== candidates.length; ++i) {
+    candidateIdentity.add(candidates[i]);
+    const k = keyOf(candidates[i]);
+    if (k !== null) candidateKeys.add(k);
+  }
+
   const rerankInput = candidates.slice();
   for (
-    let i = candidates.length, extAdded = 0;
+    let i = 0, extAdded = 0;
     i < allHits.length && extAdded < RERANK_EXTENSION_MAX;
-    ++i, ++extAdded
+    ++i
   ) {
     if (allHits[i].score < extensionFloor) break;
+    if (candidateIdentity.has(allHits[i])) continue;
+    const k = keyOf(allHits[i]);
+    if (k !== null && candidateKeys.has(k)) continue;
     rerankInput.push(allHits[i]);
+    if (k !== null) candidateKeys.add(k);
+    candidateIdentity.add(allHits[i]);
+    ++extAdded;
   }
 
   // ── Precompute query × weights, used by every candidate's rescore ──────

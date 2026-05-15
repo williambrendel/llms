@@ -44,7 +44,7 @@
  * Exit codes: 0 on all-pass, 1 on any graded failure, 2 on crash.
  */
 
-const buildAnalyzeQuery = require("../src/xenova/buildAnalyzeQuery");
+const buildAnalyzeQuery = require("../../src/xenova/buildAnalyzeQuery");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Type aliases for cases

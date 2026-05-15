@@ -74,10 +74,10 @@ const RE_WHITESPACE = /\s+/g;
  * defaultTextNormalization("Legionella-prevention — best practices.")
  * // => "Legionella-prevention best practices"
  */
-const defaultTextNormalization = (text) => text
+const defaultTextNormalization = text => text
   .replace(RE_PUNCTUATION, " ")  // strip punctuation except hyphens
   .replace(RE_WHITESPACE,  " ")  // collapse whitespace runs to a single space
-  .trim();                        // remove leading and trailing whitespace
+  .trim()                        // remove leading and trailing whitespace
 
 // ---------------------------------------------------------------------------
 // vectorize

@@ -65,15 +65,17 @@ describe("VectorStore/constants — module conventions", () => {
     expect(Object.isFrozen(constants)).toBe(true);
   });
 
-  test("exports exactly the eleven expected keys", () => {
+  test("exports exactly the 13 expected keys", () => {
     expect(Object.keys(constants).sort()).toEqual([
       "ABSOLUTE_FLOOR",
+      "MAX_CUT_INDEX",
       "MAX_OUTPUT_ROWS",
       "MIN_OUTPUT_ROWS",
       "PIVOT_ENABLED",
       "PIVOT_MAX_RESULTS",
       "PIVOT_MIN_ANCHOR_SCORE",
       "PIVOT_MIN_RESULTS",
+      "RATIO_MIN_GAP",
       "RERANK_ENABLED",
       "RERANK_EXTENSION_MAX",
       "RERANK_EXTENSION_RATIO",

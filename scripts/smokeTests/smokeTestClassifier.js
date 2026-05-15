@@ -69,7 +69,7 @@
  *     dedicated short-query handler upstream.
  */
 
-const buildClassifier = require("../src/xenova/buildAnalyzeQuery/buildClassifier");
+const buildClassifier = require("../../src/xenova/buildAnalyzeQuery/buildClassifier");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mode 2 test cases — classifier built with default anchors only

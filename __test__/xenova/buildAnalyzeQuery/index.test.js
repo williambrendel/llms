@@ -429,12 +429,193 @@ describe("buildAnalyzeQuery — factory passthrough", () => {
       thresholds: { technical: 0.6 },
     };
     await buildAnalyzeQuery(options);
+    // After spell-engine destructure, buildClassifier sees the same options
+    // minus the spellEngine field. With no spellEngine in input, shape is
+    // preserved by value (Jest uses deep equality on toHaveBeenCalledWith).
     expect(mockBuildClassifier).toHaveBeenCalledWith(options);
   });
 
-  test("works with no options (passes undefined through)", async () => {
+  test("works with no options (passes empty options through)", async () => {
     await buildAnalyzeQuery();
-    expect(mockBuildClassifier).toHaveBeenCalledWith(undefined);
+    // The factory destructures from `{} ` when called with no args, so
+    // buildClassifier receives an empty object — NOT undefined. The
+    // classifier accepts {} the same way it accepts no args; both produce
+    // a Mode 2 classifier with no TECHNICAL anchors.
+    expect(mockBuildClassifier).toHaveBeenCalledWith({});
+  });
+
+  test("spellEngine is stripped from options passed to buildClassifier", async () => {
+    // The analyzer destructures spellEngine out of options before
+    // delegating to buildClassifier. The classifier shouldn't see
+    // (or care about) the spell engine.
+    const spellEngine = { correct: jest.fn((s) => s) };
+    const options = {
+      spellEngine,
+      classes: { TECHNICAL: { anchors: ["abc"], description: "tech" } },
+    };
+    await buildAnalyzeQuery(options);
+    expect(mockBuildClassifier).toHaveBeenCalledWith({
+      classes: { TECHNICAL: { anchors: ["abc"], description: "tech" } },
+    });
+    expect(mockBuildClassifier).not.toHaveBeenCalledWith(
+      expect.objectContaining({ spellEngine: expect.anything() })
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Spell engine wiring
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The analyzer accepts an optional `spellEngine` with a `correct(text) →
+// text` method. When provided, the engine runs on the raw input AFTER
+// frustration detection and BEFORE greeting peel. The corrected form is
+// what gets embedded, classified, and surfaced as the `corrected` output
+// field. When no engine is provided, the analyzer passes the raw input
+// through untouched and `corrected === raw`.
+
+describe("buildAnalyzeQuery — spell engine wiring", () => {
+  test("when no spellEngine is provided, corrected equals raw input (trimmed)", async () => {
+    mockIsMultiPart.mockReturnValue(false);
+    const analyze = await buildAnalyzeQuery();
+    const result = await analyze("  what is pH  ");
+    expect(result.corrected).toBe("what is pH");
+  });
+
+  test("when spellEngine is provided, corrected reflects engine output", async () => {
+    const spellEngine = {
+      correct: jest.fn((s) => s.replace(/wont/gi, "won't")),
+    };
+    mockIsMultiPart.mockReturnValue(false);
+    const analyze = await buildAnalyzeQuery({ spellEngine });
+    const result = await analyze("biofilm WONT go away");
+    expect(spellEngine.correct).toHaveBeenCalledWith("biofilm WONT go away");
+    expect(result.corrected).toBe("biofilm won't go away");
+  });
+
+  test("spellEngine runs AFTER trim", async () => {
+    // Caller may submit raw input with stray whitespace. The analyzer
+    // trims first, then hands a clean trimmed string to the engine.
+    // Verifies that the engine doesn't see leading/trailing whitespace.
+    const spellEngine = { correct: jest.fn((s) => s) };
+    mockIsMultiPart.mockReturnValue(false);
+    const analyze = await buildAnalyzeQuery({ spellEngine });
+    await analyze("   biofilm question   ");
+    expect(spellEngine.correct).toHaveBeenCalledWith("biofilm question");
+  });
+
+  test("spellEngine runs BEFORE peelGreeting", async () => {
+    // A typo'd greeting like 'helo' should be correctable to 'hello'
+    // first, then peelGreeting sees the corrected form. We verify the
+    // call order by checking what input peelGreeting receives.
+    const spellEngine = {
+      correct: jest.fn((s) => s.replace(/^helo\b/, "hello")),
+    };
+    mockIsMultiPart.mockReturnValue(false);
+    mockPeelGreeting.mockReturnValue({ greeting: true, query: "test query" });
+    const analyze = await buildAnalyzeQuery({ spellEngine });
+    await analyze("helo, test query");
+    // peelGreeting should have seen the spell-corrected form, NOT the raw.
+    expect(mockPeelGreeting).toHaveBeenCalledWith(
+      expect.stringContaining("hello"),
+    );
+  });
+
+  test("frustration detection runs on raw input, NOT on corrected", async () => {
+    // The whole point of detecting frustration BEFORE correction is to
+    // capture signals (ALL CAPS, !!!, "wont") that correction would
+    // erase. We verify detectFrustration receives the original.
+    const spellEngine = {
+      correct: jest.fn((s) =>
+        s.toLowerCase().replace(/!+/g, "!").replace(/wont/g, "won't"),
+      ),
+    };
+    mockIsMultiPart.mockReturnValue(false);
+    const analyze = await buildAnalyzeQuery({ spellEngine });
+    await analyze("THIS WONT WORK!!!");
+    expect(mockDetectFrustration).toHaveBeenCalledWith("THIS WONT WORK!!!");
+  });
+
+  test("corrected is what gets embedded and classified (not raw)", async () => {
+    // Downstream embedding and classification should see the spell-
+    // corrected text. The user's typos shouldn't propagate to retrieval.
+    const spellEngine = {
+      correct: jest.fn(() => "the cleaned text"),
+    };
+    mockIsMultiPart.mockReturnValue(false);
+    mockPeelGreeting.mockImplementation((q) => ({ greeting: false, query: q }));
+    const analyze = await buildAnalyzeQuery({ spellEngine });
+    await analyze("teh cleened txt");
+    expect(mockEmbedQuery).toHaveBeenCalledWith("the cleaned text");
+    expect(mockClassifier).toHaveBeenCalledWith(
+      expect.any(Float32Array),
+      "the cleaned text",
+    );
+  });
+
+  test("queryVec reuse considers spell correction", async () => {
+    // canReuse requires cleaned === raw. With spell correction that
+    // changes the string, cleaned no longer equals raw, so the analyzer
+    // must re-embed the corrected form rather than reusing the caller's
+    // pre-computed vector (which was for the raw form).
+    const spellEngine = {
+      correct: jest.fn((s) => s.replace(/teh/g, "the")),
+    };
+    mockIsMultiPart.mockReturnValue(false);
+    const analyze = await buildAnalyzeQuery({ spellEngine });
+    const callersPrecomputedVec = new Float32Array(DIM);
+    await analyze("teh biofilm", callersPrecomputedVec);
+    // Should NOT reuse the caller's vec because correction changed the text.
+    expect(mockEmbedQuery).toHaveBeenCalledWith("the biofilm");
+  });
+
+  test("queryVec reuse still works when spellEngine is a no-op", async () => {
+    // If the spell engine returns its input unchanged AND no other
+    // transforms fired (no peel, no collapse-effective change), cleaned
+    // === raw and the caller's vec is reusable.
+    const spellEngine = { correct: jest.fn((s) => s) };
+    mockIsMultiPart.mockReturnValue(false);
+    mockCollapseRepeatedPunctuation.mockImplementation((s) => s);
+    mockPeelGreeting.mockImplementation((q) => ({ greeting: false, query: q }));
+    const analyze = await buildAnalyzeQuery({ spellEngine });
+    const callersPrecomputedVec = new Float32Array(DIM);
+    callersPrecomputedVec[0] = 42;
+    const result = await analyze("biofilm question", callersPrecomputedVec);
+    expect(mockEmbedQuery).not.toHaveBeenCalled();
+    expect(result.segments[0].vec).toBe(callersPrecomputedVec);
+  });
+
+  test("corrected is present even on greeting-only fast path", async () => {
+    // The greeting-only fast path returns early with empty segments,
+    // but `corrected` is still surfaced — the dispatcher may want to
+    // echo "you said: <corrected>" even when the response is a
+    // pure greeting reply.
+    const spellEngine = {
+      correct: jest.fn(() => "hello"),
+    };
+    mockPeelGreeting.mockReturnValue({ greeting: true, query: "" });
+    const analyze = await buildAnalyzeQuery({ spellEngine });
+    const result = await analyze("hellp");
+    expect(result.segments).toEqual([]);
+    expect(result.query).toBe("");
+    expect(result.corrected).toBe("hello");
+    expect(result.greeting).toBe(true);
+  });
+
+  test("corrected is present on multi-segment results", async () => {
+    // When the query splits into multiple segments, `corrected` is
+    // still a single whole-query field on the top-level result —
+    // not per-segment. Verifies the property exists and matches the
+    // engine's output for the whole input.
+    const spellEngine = {
+      correct: jest.fn((s) => s.replace(/wnat/g, "want")),
+    };
+    mockIsMultiPart.mockReturnValue(true);
+    mockGreedySplit.mockReturnValue(["what is pH", "i wnat to know more"]);
+    const analyze = await buildAnalyzeQuery({ spellEngine });
+    const result = await analyze("what is pH and i wnat to know more");
+    expect(result.corrected).toBe("what is pH and i want to know more");
+    expect(result.segments).toHaveLength(2);
   });
 });
 
