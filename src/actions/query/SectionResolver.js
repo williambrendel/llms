@@ -369,7 +369,7 @@ class SectionResolver {
    *
    * @returns {string[]}
    */
-  documentIds() {
+  get documentIds() {
     return Array.from(this.#map.keys());
   }
 
@@ -378,7 +378,7 @@ class SectionResolver {
    *
    * @returns {number}
    */
-  size() {
+  get size() {
     return this.#map.size;
   }
 }

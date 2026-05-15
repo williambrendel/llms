@@ -63,15 +63,15 @@ describe.each([SYNC_PATH, ASYNC_PATH])("SectionResolver — $name — Map input"
   test("accepts a prebuilt Map", async () => {
     const map = new Map([["test|doc", "ABCDEFGHIJ"]]);
     const resolver = await construct(adapter, map);
-    expect(resolver.size()).toBe(1);
-    expect(resolver.documentIds()).toEqual(["test|doc"]);
+    expect(resolver.size).toBe(1);
+    expect(resolver.documentIds).toEqual(["test|doc"]);
     expect(resolver.resolve("test|doc", [0, 5])).toBe("ABCDE");
   });
 
   test("empty Map is valid (size 0)", async () => {
     const resolver = await construct(adapter, new Map());
-    expect(resolver.size()).toBe(0);
-    expect(resolver.documentIds()).toEqual([]);
+    expect(resolver.size).toBe(0);
+    expect(resolver.documentIds).toEqual([]);
   });
 });
 
@@ -80,8 +80,8 @@ describe.each([SYNC_PATH, ASYNC_PATH])("SectionResolver — $name — directory 
     const { root } = await makeCorpus();
     try {
       const resolver = await construct(adapter, root);
-      expect(resolver.size()).toBe(3);
-      expect(resolver.documentIds()).toEqual(expect.arrayContaining([
+      expect(resolver.size).toBe(3);
+      expect(resolver.documentIds).toEqual(expect.arrayContaining([
         "biocides|water_chemistry",
         "biocides|causes_of_resistance",
         "operations|inspection",
@@ -100,8 +100,8 @@ describe.each([SYNC_PATH, ASYNC_PATH])("SectionResolver — $name — directory 
 
       const resolver = await construct(adapter, root);
       // The IMMEDIATE parent folder ("c") becomes the theme.
-      expect(resolver.documentIds()).toContain("c|leaf");
-      expect(resolver.size()).toBe(1);
+      expect(resolver.documentIds).toContain("c|leaf");
+      expect(resolver.size).toBe(1);
     } finally {
       await cleanup(root);
     }
@@ -115,8 +115,8 @@ describe.each([SYNC_PATH, ASYNC_PATH])("SectionResolver — $name — directory 
       await fsAsync.writeFile(path.join(root, "image.png"), "binary", "utf8");
 
       const resolver = await construct(adapter, root);
-      expect(resolver.size()).toBe(1);
-      const ids = resolver.documentIds();
+      expect(resolver.size).toBe(1);
+      const ids = resolver.documentIds;
       expect(ids.some(id => id.endsWith("|real"))).toBe(true);
     } finally {
       await cleanup(root);
@@ -127,8 +127,8 @@ describe.each([SYNC_PATH, ASYNC_PATH])("SectionResolver — $name — directory 
     const root = await fsAsync.mkdtemp(path.join(os.tmpdir(), "section-resolver-empty-"));
     try {
       const resolver = await construct(adapter, root);
-      expect(resolver.size()).toBe(0);
-      expect(resolver.documentIds()).toEqual([]);
+      expect(resolver.size).toBe(0);
+      expect(resolver.documentIds).toEqual([]);
     } finally {
       await cleanup(root);
     }
@@ -153,8 +153,8 @@ describe.each([SYNC_PATH, ASYNC_PATH])("SectionResolver — $name — single-fil
       await fsAsync.writeFile(filePath, "single file content", "utf8");
 
       const resolver = await construct(adapter, filePath);
-      expect(resolver.size()).toBe(1);
-      expect(resolver.documentIds()).toEqual(["theme|solo"]);
+      expect(resolver.size).toBe(1);
+      expect(resolver.documentIds).toEqual(["theme|solo"]);
     } finally {
       await cleanup(root);
     }
@@ -171,7 +171,7 @@ describe.each([SYNC_PATH, ASYNC_PATH])("SectionResolver — $name — single-fil
       await fsAsync.writeFile(filePath, "txt content", "utf8");
 
       const resolver = await construct(adapter, filePath);
-      expect(resolver.size()).toBe(1);
+      expect(resolver.size).toBe(1);
     } finally {
       await cleanup(root);
     }
@@ -354,7 +354,5 @@ describe("SectionResolver — module export", () => {
 
   test("instance methods exist on prototype", () => {
     expect(typeof SectionResolver.prototype.resolve).toBe("function");
-    expect(typeof SectionResolver.prototype.documentIds).toBe("function");
-    expect(typeof SectionResolver.prototype.size).toBe("function");
   });
 });
