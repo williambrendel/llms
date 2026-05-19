@@ -81,6 +81,70 @@ class VectorStore extends Array {
   }
 
   /**
+   * Ingest new documents into the existing store from one or more
+   * paths, in place. Variadic: accepts any combination of strings
+   * and (possibly nested) arrays of strings. Arguments are flattened
+   * via `flat(Infinity)`, so:
+   *
+   *   await store.add("a.bin");
+   *   await store.add("a.bin", "b.bin");
+   *   await store.add(["a.bin", "b.bin"]);
+   *   await store.add(["a.bin", ["b.bin", "c.bin"]], "d.bin");
+   *
+   * all work and resolve to the same in-place merge.
+   *
+   * Each path may be a file or a directory — same polymorphism as
+   * `load()`. Paths are loaded sequentially (not in parallel) so a
+   * failure midway leaves a deterministic prefix of paths loaded and
+   * the rest untouched. Use `Promise.all` at the call site if you
+   * want parallelism and don't care about ordering.
+   *
+   * Equivalent to `load(path, { clear: false })` per path. Use
+   * `load()` directly when you want the default replace-everything
+   * behavior (typically only at boot).
+   *
+   * Mirrors {@link SectionResolver#add}.
+   *
+   * @async
+   * @param {...(string|string[])} inputPaths - Paths, or arrays of paths.
+   * @returns {Promise<VectorStore>} `this`, for chaining.
+   */
+  async add(...inputPaths) {
+    inputPaths = inputPaths.flat(Infinity);
+    if (inputPaths.length === 0) return this;
+
+    // Validate input types up front. Cheap and fails fast — no
+    // point firing parallel loads if one arg is the wrong shape.
+    for (const p of inputPaths) {
+      if (typeof p !== "string" || p.length === 0) {
+        throw new Error(`VectorStore.add: each path must be a non-empty string, got ${typeof p}`);
+      }
+    }
+
+    // Parallel loads. allSettled so one bad file doesn't stop the
+    // others from landing. load() itself is atomic per-path: a
+    // failing parse leaves the store untouched for that path.
+    const settled = await Promise.allSettled(
+      inputPaths.map(p => load(this, p, { clear: false }))
+    );
+
+    // Surface per-path failures as a single AggregateError. The
+    // store now holds every successfully loaded path; failures
+    // didn't touch it. The caller (PendingQueue) sees the throw
+    // and increments retries for whichever entries it submitted.
+    const errors = settled
+      .map((r, i) => r.status === "rejected"
+        ? new Error(`VectorStore.add: failed loading "${inputPaths[i]}": ${r.reason.message}`)
+        : null)
+      .filter(Boolean);
+
+    if (errors.length > 0) {
+      throw new AggregateError(errors, `VectorStore.add: ${errors.length}/${inputPaths.length} paths failed`);
+    }
+    return this;
+  }
+
+  /**
    * Score every section across every document and return the raw hits
    * (no pruning, rerank, or safety rails). Composition over per-document
    * {@link Document#score} calls.

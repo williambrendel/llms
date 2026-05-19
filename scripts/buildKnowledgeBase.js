@@ -46,7 +46,7 @@ const vectorize       = require("../src/xenova/vectorize");
 const claudeRun       = require("../src/claude");
 const { SONNET45_CONFIG } = require("../src/claude/config");
 const makeLimit       = require("../src/utilities/makeLimit");
-const makeRateLimit   = require("../src/utilities/makeLimit");
+const makeRateLimit   = require("../src/utilities/makeRateLimit");
 const formatDuration  = require("./utilities/formatDuration");
 const resolveOutputPath = require("./io/resolveOutputPath");
 

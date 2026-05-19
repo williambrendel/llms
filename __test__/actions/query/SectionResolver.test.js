@@ -356,3 +356,256 @@ describe("SectionResolver — module export", () => {
     expect(typeof SectionResolver.prototype.resolve).toBe("function");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// add() — variadic in-place ingestion
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("SectionResolver.add — single input modes", () => {
+  test("adds a single Map", async () => {
+    const r = new SectionResolver(new Map());
+    const added = await r.add(new Map([["new|doc", "hello"]]));
+
+    expect(added).toBe(1);
+    expect(r.size).toBe(1);
+    expect(r.resolve("new|doc", [0, 5])).toBe("hello");
+  });
+
+  test("adds a single file path", async () => {
+    const root = await fsAsync.mkdtemp(path.join(os.tmpdir(), "section-resolver-add-file-"));
+    try {
+      const filepath = path.join(root, "biocides", "new.md");
+      await fsAsync.mkdir(path.dirname(filepath), { recursive: true });
+      await fsAsync.writeFile(filepath, "ABCDEFG", "utf8");
+
+      const r = new SectionResolver(new Map());
+      const added = await r.add(filepath);
+
+      expect(added).toBe(1);
+      expect(r.size).toBe(1);
+      expect(r.resolve("biocides|new", [0, 3])).toBe("ABC");
+    } finally {
+      await cleanup(root);
+    }
+  });
+
+  test("adds a directory of markdowns", async () => {
+    const root = await fsAsync.mkdtemp(path.join(os.tmpdir(), "section-resolver-add-dir-"));
+    try {
+      const writeMd = async (relPath, content) => {
+        const full = path.join(root, relPath);
+        await fsAsync.mkdir(path.dirname(full), { recursive: true });
+        await fsAsync.writeFile(full, content, "utf8");
+      };
+      await writeMd("biocides/a.md", "alpha");
+      await writeMd("biocides/b.md", "beta");
+      await writeMd("biology/c.md",  "gamma");
+
+      const r = new SectionResolver(new Map());
+      const added = await r.add(root);
+
+      expect(added).toBe(3);
+      expect(r.size).toBe(3);
+      expect(r.documentIds.sort()).toEqual([
+        "biocides|a", "biocides|b", "biology|c",
+      ]);
+    } finally {
+      await cleanup(root);
+    }
+  });
+
+  test("preserves entries already in the resolver", async () => {
+    const r = new SectionResolver(new Map([["existing|doc", "old"]]));
+    await r.add(new Map([["new|doc", "new"]]));
+
+    expect(r.size).toBe(2);
+    expect(r.resolve("existing|doc", [0, 3])).toBe("old");
+    expect(r.resolve("new|doc", [0, 3])).toBe("new");
+  });
+});
+
+describe("SectionResolver.add — variadic", () => {
+  test("accepts multiple file paths as separate args", async () => {
+    const root = await fsAsync.mkdtemp(path.join(os.tmpdir(), "section-resolver-add-var-"));
+    try {
+      const writeMd = async (relPath, content) => {
+        const full = path.join(root, relPath);
+        await fsAsync.mkdir(path.dirname(full), { recursive: true });
+        await fsAsync.writeFile(full, content, "utf8");
+        return full;
+      };
+      const a = await writeMd("t/a.md", "AAA");
+      const b = await writeMd("t/b.md", "BBB");
+
+      const r = new SectionResolver(new Map());
+      const added = await r.add(a, b);
+
+      expect(added).toBe(2);
+      expect(r.documentIds.sort()).toEqual(["t|a", "t|b"]);
+    } finally {
+      await cleanup(root);
+    }
+  });
+
+  test("accepts an array of paths", async () => {
+    const root = await fsAsync.mkdtemp(path.join(os.tmpdir(), "section-resolver-add-arr-"));
+    try {
+      const writeMd = async (relPath, content) => {
+        const full = path.join(root, relPath);
+        await fsAsync.mkdir(path.dirname(full), { recursive: true });
+        await fsAsync.writeFile(full, content, "utf8");
+        return full;
+      };
+      const a = await writeMd("t/a.md", "AAA");
+      const b = await writeMd("t/b.md", "BBB");
+
+      const r = new SectionResolver(new Map());
+      const added = await r.add([a, b]);
+
+      expect(added).toBe(2);
+    } finally {
+      await cleanup(root);
+    }
+  });
+
+  test("flat(Infinity) unrolls nested arrays", async () => {
+    const root = await fsAsync.mkdtemp(path.join(os.tmpdir(), "section-resolver-add-nest-"));
+    try {
+      const writeMd = async (relPath, content) => {
+        const full = path.join(root, relPath);
+        await fsAsync.mkdir(path.dirname(full), { recursive: true });
+        await fsAsync.writeFile(full, content, "utf8");
+        return full;
+      };
+      const a = await writeMd("t/a.md", "AAA");
+      const b = await writeMd("t/b.md", "BBB");
+      const c = await writeMd("t/c.md", "CCC");
+
+      const r = new SectionResolver(new Map());
+      const added = await r.add([[a], [[b, c]]]);
+
+      expect(added).toBe(3);
+    } finally {
+      await cleanup(root);
+    }
+  });
+
+  test("mixes Maps, paths, and arrays in one call", async () => {
+    const root = await fsAsync.mkdtemp(path.join(os.tmpdir(), "section-resolver-add-mix-"));
+    try {
+      const filepath = path.join(root, "t", "file.md");
+      await fsAsync.mkdir(path.dirname(filepath), { recursive: true });
+      await fsAsync.writeFile(filepath, "from-file", "utf8");
+
+      const r = new SectionResolver(new Map());
+      const added = await r.add(
+        new Map([["from|map1", "m1"]]),
+        filepath,
+        [new Map([["from|map2", "m2"]]), new Map([["from|map3", "m3"]])],
+      );
+
+      expect(added).toBe(4);
+      expect(r.documentIds.sort()).toEqual([
+        "from|map1", "from|map2", "from|map3", "t|file",
+      ]);
+    } finally {
+      await cleanup(root);
+    }
+  });
+
+  test("empty variadic call returns 0", async () => {
+    const r = new SectionResolver(new Map());
+    expect(await r.add()).toBe(0);
+    expect(r.size).toBe(0);
+  });
+
+  test("empty array call returns 0", async () => {
+    const r = new SectionResolver(new Map());
+    expect(await r.add([])).toBe(0);
+    expect(r.size).toBe(0);
+  });
+});
+
+describe("SectionResolver.add — collision detection", () => {
+  test("throws when an incoming documentId already exists in the index", async () => {
+    const r = new SectionResolver(new Map([["t|doc", "old"]]));
+
+    await expect(r.add(new Map([["t|doc", "new"]])))
+      .rejects.toThrow(/collision with existing index.+t\|doc/);
+
+    // Index unchanged.
+    expect(r.size).toBe(1);
+    expect(r.resolve("t|doc", [0, 3])).toBe("old");
+  });
+
+  test("throws when two args in the same call share a documentId", async () => {
+    const r = new SectionResolver(new Map());
+
+    await expect(r.add(
+      new Map([["t|doc", "from-1"]]),
+      new Map([["t|doc", "from-2"]]),
+    )).rejects.toThrow(/collision within this call.+t\|doc/);
+
+    expect(r.size).toBe(0);
+  });
+
+  test("on collision, index is left in its pre-call state (atomic)", async () => {
+    const r = new SectionResolver(new Map([["t|existing", "old"]]));
+
+    await expect(r.add(
+      new Map([["t|fresh", "this would be valid"]]),
+      new Map([["t|existing", "this collides"]]),
+    )).rejects.toThrow();
+
+    expect(r.size).toBe(1);
+    expect(r.documentIds).toEqual(["t|existing"]);
+  });
+});
+
+describe("SectionResolver.add — read failures", () => {
+  test("throws AggregateError when a path doesn't exist", async () => {
+    const root = await fsAsync.mkdtemp(path.join(os.tmpdir(), "section-resolver-add-readfail-"));
+    try {
+      const ok = path.join(root, "t", "ok.md");
+      await fsAsync.mkdir(path.dirname(ok), { recursive: true });
+      await fsAsync.writeFile(ok, "good", "utf8");
+
+      const missing = path.join(root, "does-not-exist.md");
+
+      const r = new SectionResolver(new Map());
+
+      let err;
+      try {
+        await r.add(ok, missing);
+      } catch (e) {
+        err = e;
+      }
+
+      expect(err).toBeInstanceOf(AggregateError);
+      expect(err.errors.length).toBeGreaterThanOrEqual(1);
+      // Index untouched — even the readable file did NOT land.
+      expect(r.size).toBe(0);
+    } finally {
+      await cleanup(root);
+    }
+  });
+
+  test("throws on invalid argument shape", async () => {
+    const r = new SectionResolver(new Map());
+    await expect(r.add(42)).rejects.toThrow();
+    await expect(r.add(null)).rejects.toThrow();
+    await expect(r.add({})).rejects.toThrow();
+  });
+});
+
+describe("SectionResolver.add — return value", () => {
+  test("returns the number of NEW documents added", async () => {
+    const r = new SectionResolver(new Map([["existing|doc", "x"]]));
+    const added = await r.add(new Map([
+      ["new|a", "a"],
+      ["new|b", "b"],
+    ]));
+    expect(added).toBe(2);
+    expect(r.size).toBe(3);
+  });
+});

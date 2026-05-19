@@ -314,3 +314,194 @@ describe("VectorStore — module export conventions", () => {
     expect(Object.isFrozen(VectorStore)).toBe(true);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// add() — variadic in-place append
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("VectorStore — add (single input modes)", () => {
+  test("adds a single file", async () => {
+    const filepath = path.join(tmpRoot, "add-single-file.bin");
+    await writeFixture(filepath, "single|a");
+
+    const store = new VectorStore();
+    await store.add(filepath);
+
+    expect(store.length).toBe(1);
+    expect(store[0].documentId).toBe("single|a");
+  });
+
+  test("adds a directory", async () => {
+    const dir = await fs.mkdtemp(path.join(tmpRoot, "add-single-dir-"));
+    await writeFixture(path.join(dir, "a.bin"), "addDir|a");
+    await writeFixture(path.join(dir, "b.bin"), "addDir|b");
+
+    const store = new VectorStore();
+    await store.add(dir);
+
+    expect(store.length).toBe(2);
+    expect(store.map(d => d.documentId).sort()).toEqual(["addDir|a", "addDir|b"]);
+  });
+
+  test("preserves existing documents (equivalent to load with clear: false)", async () => {
+    const a = path.join(tmpRoot, "add-preserve-a.bin");
+    const b = path.join(tmpRoot, "add-preserve-b.bin");
+    await writeFixture(a, "preserve|a");
+    await writeFixture(b, "preserve|b");
+
+    const store = new VectorStore();
+    await store.load(a);                  // initial load (clear: true)
+    expect(store.length).toBe(1);
+
+    await store.add(b);
+    expect(store.length).toBe(2);
+    expect(store.map(d => d.documentId).sort()).toEqual(["preserve|a", "preserve|b"]);
+  });
+});
+
+describe("VectorStore — add (variadic)", () => {
+  test("accepts multiple positional arguments", async () => {
+    const a = path.join(tmpRoot, "add-var-a.bin");
+    const b = path.join(tmpRoot, "add-var-b.bin");
+    const c = path.join(tmpRoot, "add-var-c.bin");
+    await writeFixture(a, "var|a");
+    await writeFixture(b, "var|b");
+    await writeFixture(c, "var|c");
+
+    const store = new VectorStore();
+    await store.add(a, b, c);
+
+    expect(store.length).toBe(3);
+    expect(store.map(d => d.documentId).sort()).toEqual(["var|a", "var|b", "var|c"]);
+  });
+
+  test("accepts an array of paths", async () => {
+    const a = path.join(tmpRoot, "add-arr-a.bin");
+    const b = path.join(tmpRoot, "add-arr-b.bin");
+    await writeFixture(a, "arr|a");
+    await writeFixture(b, "arr|b");
+
+    const store = new VectorStore();
+    await store.add([a, b]);
+
+    expect(store.length).toBe(2);
+  });
+
+  test("flat(Infinity) unrolls nested arrays", async () => {
+    const a = path.join(tmpRoot, "add-nest-a.bin");
+    const b = path.join(tmpRoot, "add-nest-b.bin");
+    const c = path.join(tmpRoot, "add-nest-c.bin");
+    await writeFixture(a, "nest|a");
+    await writeFixture(b, "nest|b");
+    await writeFixture(c, "nest|c");
+
+    const store = new VectorStore();
+    await store.add([[a], [[b, c]]]);
+
+    expect(store.length).toBe(3);
+  });
+
+  test("mixes paths and arrays in one call", async () => {
+    const a = path.join(tmpRoot, "add-mix-a.bin");
+    const b = path.join(tmpRoot, "add-mix-b.bin");
+    const c = path.join(tmpRoot, "add-mix-c.bin");
+    await writeFixture(a, "mix|a");
+    await writeFixture(b, "mix|b");
+    await writeFixture(c, "mix|c");
+
+    const store = new VectorStore();
+    await store.add(a, [b, c]);
+
+    expect(store.length).toBe(3);
+  });
+
+  test("empty variadic call returns store with no changes", async () => {
+    const store = new VectorStore();
+    const result = await store.add();
+    expect(result).toBe(store);
+    expect(store.length).toBe(0);
+  });
+
+  test("empty array call returns store with no changes", async () => {
+    const store = new VectorStore();
+    const result = await store.add([]);
+    expect(result).toBe(store);
+    expect(store.length).toBe(0);
+  });
+
+  test("returns this for chaining", async () => {
+    const a = path.join(tmpRoot, "add-chain.bin");
+    await writeFixture(a, "chain|a");
+
+    const store = new VectorStore();
+    const result = await store.add(a);
+    expect(result).toBe(store);
+  });
+});
+
+describe("VectorStore — add (input validation)", () => {
+  test("throws on non-string entries", async () => {
+    const store = new VectorStore();
+    await expect(store.add(42)).rejects.toThrow(/must be a non-empty string/);
+    await expect(store.add(null)).rejects.toThrow(/must be a non-empty string/);
+    await expect(store.add({})).rejects.toThrow(/must be a non-empty string/);
+  });
+
+  test("throws on empty string", async () => {
+    const store = new VectorStore();
+    await expect(store.add("")).rejects.toThrow(/must be a non-empty string/);
+  });
+
+  test("validation is upfront — does not load any path if one is invalid", async () => {
+    const a = path.join(tmpRoot, "add-validation-a.bin");
+    await writeFixture(a, "validation|a");
+
+    const store = new VectorStore();
+    await expect(store.add(a, 42)).rejects.toThrow(/must be a non-empty string/);
+    expect(store.length).toBe(0);   // valid path did not land
+  });
+});
+
+describe("VectorStore — add (partial failure)", () => {
+  test("throws AggregateError when one path fails to load", async () => {
+    const ok = path.join(tmpRoot, "add-agg-ok.bin");
+    await writeFixture(ok, "agg|ok");
+
+    const missing = path.join(tmpRoot, "add-agg-missing.bin");
+
+    const store = new VectorStore();
+
+    let err;
+    try {
+      await store.add(ok, missing);
+    } catch (e) {
+      err = e;
+    }
+
+    expect(err).toBeInstanceOf(AggregateError);
+    expect(err.errors.length).toBeGreaterThanOrEqual(1);
+    expect(err.errors.some(e => e.message.includes("add-agg-missing"))).toBe(true);
+
+    // The valid path DID land (VectorStore.load has per-path atomicity).
+    expect(store.length).toBe(1);
+    expect(store[0].documentId).toBe("agg|ok");
+  });
+
+  test("all paths fail → AggregateError with all errors", async () => {
+    const missing1 = path.join(tmpRoot, "add-all-fail-1.bin");
+    const missing2 = path.join(tmpRoot, "add-all-fail-2.bin");
+
+    const store = new VectorStore();
+
+    let err;
+    try {
+      await store.add(missing1, missing2);
+    } catch (e) {
+      err = e;
+    }
+
+    expect(err).toBeInstanceOf(AggregateError);
+    expect(err.errors.length).toBe(2);
+    expect(store.length).toBe(0);
+  });
+});

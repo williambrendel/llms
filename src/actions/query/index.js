@@ -1,9 +1,11 @@
 "use strict";
 
+const parseResponseJson      = require("../../utilities/parseResponseJson");
 const SectionResolver        = require("./SectionResolver");
 const unionHits              = require("./unionHits");
 const validateLLMResponse    = require("./validateLLMResponse");
 const search                 = require("../../VectorStore/search");
+const Stats                  = require("../../Stats");
 const serializeQueryContext  = require("../../xenova/serializeQueryContext");
 const { MAX_OUTPUT_ROWS }    = require("../../VectorStore/constants");
 
@@ -163,9 +165,10 @@ const enrichWithSectionText = (hits, resolver) => {
  * @param {object} analysis - Analyzer output.
  * @param {string} rawQuery - Original user input (echoed in `query`).
  * @param {string} text - The single-chunk answer text.
+ * @param {Stats} [stats] - Optional Stats accumulator; defaults to empty.
  * @returns {object} Response in the standard shape.
  */
-const buildSimpleResponse = (analysis, rawQuery, text) => ({
+const buildSimpleResponse = (analysis, rawQuery, text, stats) => ({
   query:             rawQuery,
   corrected:         analysis.corrected,
   greeting:          analysis.greeting,
@@ -173,6 +176,7 @@ const buildSimpleResponse = (analysis, rawQuery, text) => ({
   user_intent:       serializeQueryContext.buildIntents(analysis),
   answer:            [{ text }],
   followUpQuestions: [],
+  stats:             stats || new Stats(),
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -242,6 +246,12 @@ const run = async ({
   // greeting peel, segmentation, per-segment classification + embedding.
   const analysis = await analyzeQuery(rawQuery);
 
+  // Per-call stats accumulator. Every LLM call below pushes its
+  // Response.stats onto this collection. We attach it to every return
+  // path so callers can persist cost/duration/tokens without wrapping
+  // runLLM themselves.
+  const stats = new Stats();
+
   // ── Path 1: Pure greeting fast path ──────────────────────────────────────
   //
   // No segments AND greeting was peeled. Nothing to search, nothing to
@@ -253,7 +263,7 @@ const run = async ({
   // evidence the user just said hello.
   if (analysis.segments.length === 0 && analysis.greeting) {
     const text = greetingTemplate || pickGreetingTemplate(analysis.corrected || analysis.query || rawQuery);
-    return buildSimpleResponse(analysis, rawQuery, text);
+    return buildSimpleResponse(analysis, rawQuery, text, stats);
   }
 
   // ── Search per segment, union results ────────────────────────────────────
@@ -301,12 +311,17 @@ const run = async ({
       continue;
     }
 
+    // Capture per-call stats. Stats.normalize is tolerant of any shape:
+    // string, Response envelope, pre-parsed object, or response without
+    // stats — so this works regardless of what runLLM happened to return.
+    raw?.stats && stats.push(...Stats.normalize(raw));
+
     // The LLM response envelope shape is caller-dependent. We expect
     // either a parsed JSON object directly or something with a `.content`
     // accessor — the smoke test will use whatever shape `runLLM` returns.
     // Here we accept the raw response and let the validator decide.
-    llmOutput = raw;
-    validatorResult = validateLLMResponse(raw);
+    llmOutput = parseResponseJson(raw);
+    validatorResult = validateLLMResponse(llmOutput);
     if (validatorResult.valid) break;
   }
 
@@ -316,7 +331,7 @@ const run = async ({
   // (default) or return the fallback if one was provided.
   if (!validatorResult.valid) {
     if (typeof fallbackAnswer === "string" && fallbackAnswer.length > 0) {
-      return buildSimpleResponse(analysis, rawQuery, fallbackAnswer);
+      return buildSimpleResponse(analysis, rawQuery, fallbackAnswer, stats);
     }
     const err = new Error(
       `run: LLM output failed validation after ${totalAttempts} attempts: ${validatorResult.errors.join("; ")}`
@@ -324,6 +339,7 @@ const run = async ({
     err.attempts = totalAttempts;
     err.errors = validatorResult.errors;
     err.lastOutput = llmOutput;
+    err.stats = stats;   // ← also attach to the thrown error so the caller can read partial stats
     throw err;
   }
 
@@ -340,6 +356,7 @@ const run = async ({
     user_intent:       serializeQueryContext.buildIntents(analysis),
     answer:            llmOutput.answer,
     followUpQuestions: llmOutput.followUpQuestions,
+    stats,
   };
 };
 

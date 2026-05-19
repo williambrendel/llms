@@ -53,6 +53,13 @@
  * // → [{ a: 1 }]
  */
 const parseResponseJson = text => {
+
+  // Pre-parsed object/array (no `output.text` to unwrap) → pass through.
+  if (text && typeof text === "object" && !(text.output && typeof text.output.text === "string")) {
+    return text;
+  }
+
+  // Response envelope → unwrap to its text body.
   text && typeof text === "object" && (text = text?.output?.text);
   if (!text) return null;
   if (typeof text !== "string") {

@@ -1,5 +1,5 @@
 {
-  "name": "ask-nereus-server",
+  "name": "llms",
   "version": "1.0.0",
   "description": "LLM lib",
   "scripts": {

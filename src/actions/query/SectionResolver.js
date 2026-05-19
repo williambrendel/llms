@@ -350,6 +350,116 @@ class SectionResolver {
   }
 
   /**
+   * Ingest one or more new documents into the existing index, in
+   * place. Variadic: accepts any combination of strings, Maps, and
+   * (possibly nested) arrays thereof. Arguments are flattened via
+   * `flat(Infinity)`, so:
+   *
+   *   await resolver.add("a.md");
+   *   await resolver.add("a.md", "b.md");
+   *   await resolver.add(["a.md", "b.md"]);
+   *   await resolver.add(["dir/", ["c.md", "d.md"]], mapFixture);
+   *
+   * all work and resolve to the same in-place merge. Maps survive
+   * `flat(Infinity)` because they aren't arrays — they pass through
+   * untouched.
+   *
+   * Each argument may be:
+   *   - A `Map<documentId, content>`: merged directly. No I/O.
+   *   - A file path (string, any extension): read once.
+   *   - A directory path (string): recursively walked for `.md` files.
+   *
+   * Collision policy applies across the union of all incoming
+   * inputs: if any documentId — whether from the existing index, an
+   * earlier argument in this call, or a duplicate within a single
+   * directory — appears twice, the call throws and the index is
+   * left untouched. All-or-nothing semantics so a partial merge
+   * can't leave the resolver in an ambiguous state.
+   *
+   * @async
+   * @param {...(Map<string,string> | string | (Map|string)[])} inputs
+   * @returns {Promise<number>} The total number of new documents added.
+   *
+   * @throws {Error} On invalid input type, missing/unreadable path,
+   *   path that's neither file nor directory, or documentId
+   *   collision (with existing entries, with another argument, or
+   *   within a single argument's contents).
+   *
+   * @example <caption>Single file</caption>
+   *   await resolver.add("data/markdowns/biocides/new-doc.md");
+   *
+   * @example <caption>Mixed inputs in one call</caption>
+   *   await resolver.add(
+   *     "data/markdowns/incoming/",
+   *     ["data/markdowns/biocides/a.md", "data/markdowns/biocides/b.md"],
+   *     prebuiltMap,
+   *   );
+   */
+  async add(...inputs) {
+    inputs = inputs.flat(Infinity);
+    if (inputs.length === 0) return 0;
+
+    // Read in parallel. Maps pass through untouched (no I/O); path
+    // strings get fully read. allSettled so one bad path doesn't
+    // abort the rest — but we won't COMMIT anything if any failed,
+    // since the index has all-or-nothing semantics.
+    const settled = await Promise.allSettled(inputs.map(async (input) => {
+      if (input instanceof Map) return input;
+      if (typeof input === "string" && input.length > 0) {
+        const { filePaths, contents } = await readPathAsync(input);
+        return buildMapFromFilePaths(filePaths, contents);
+      }
+      throw new Error(
+        "SectionResolver.add: each input must be a Map<documentId, content> or a path string"
+      );
+    }));
+
+    // If any read failed, surface them all together. Index is
+    // untouched.
+    const readErrors = settled
+      .map((r, i) => r.status === "rejected"
+        ? new Error(`SectionResolver.add: input ${i} failed: ${r.reason.message}`)
+        : null)
+      .filter(Boolean);
+
+    if (readErrors.length > 0) {
+      throw new AggregateError(readErrors, `SectionResolver.add: ${readErrors.length}/${inputs.length} inputs failed to read`);
+    }
+
+    // Stage everything into one Map. Detect collisions both within
+    // the incoming set and against the existing index BEFORE
+    // mutating. This is the "all-or-nothing" guarantee — a partial
+    // index would be ambiguous.
+    const merged = new Map();
+    for (const incoming of settled.map(r => r.value)) {
+      for (const [documentId, content] of incoming) {
+        if (merged.has(documentId)) {
+          throw new Error(
+            `SectionResolver.add: documentId collision within this call — "${documentId}" appears in multiple inputs`
+          );
+        }
+        merged.set(documentId, content);
+      }
+    }
+
+    const existingCollisions = [];
+    for (const documentId of merged.keys()) {
+      if (this.#map.has(documentId)) existingCollisions.push(documentId);
+    }
+    if (existingCollisions.length > 0) {
+      throw new Error(
+        `SectionResolver.add: documentId collision with existing index — already indexed: ${existingCollisions.join(", ")}`
+      );
+    }
+
+    // Safe to merge.
+    for (const [documentId, content] of merged) {
+      this.#map.set(documentId, content);
+    }
+    return merged.size;
+  }
+
+  /**
    * List every documentId in the index. Useful for smoke tests
    * verifying corpus alignment with the VectorStore.
    *
