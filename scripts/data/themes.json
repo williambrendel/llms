@@ -1,0 +1,257 @@
+{
+  "biocides-and-chemical-treatment": {
+    "description": "Chemical biocide products, dosing strategies, and treatment programs for industrial water systems. Covers oxidizing biocides (chlorine, bromine, chlorine dioxide, ozone, peracetic acid) and non-oxidizing biocides (isothiazolones, glutaraldehyde, DBNPA, quaternary ammonium compounds). Includes biocide selection, rotation strategies, dose calculations, contact time, pH effects on efficacy, and shock vs continuous dosing.",
+    "examples": [
+      "How Chlorine Effectiveness Drops at High pH",
+      "When to Rotate Oxidizing and Non-Oxidizing Biocides",
+      "Choosing Between Bromine and Chlorine for Alkaline Cooling Systems",
+      "On-Site Chlorine Dioxide Generation for Cooling Towers",
+      "DBNPA Dosing Strategy for Cooling Water Microbial Control"
+    ],
+    "notFor": [
+      "Microbial growth mechanisms and biofilm structure → use biological-control-and-prevention",
+      "Legionella-specific treatment regimens → use legionella-specific-control-and-prevention",
+      "Long-term biocide program effectiveness across system types → use case-studies-and-transition-planning"
+    ]
+  },
+  "biological-control-and-prevention": {
+    "description": "Microbial ecology, biofilm formation, and biological fouling in industrial water systems. Covers microbial growth mechanisms, biofilm matrix structure, ATP monitoring, microbial sampling and testing, regrowth dynamics, and prevention strategies that go beyond chemical dosing. Includes how biofilms resist biocide penetration and why microbial tolerance develops.",
+    "examples": [
+      "How Biofilm Resists Biocide Penetration",
+      "Why ATP Monitoring Detects What Plate Counts Miss",
+      "Sublethal Biocide Exposure and Microbial Tolerance Development",
+      "Identifying Common Cooling Tower Microorganisms",
+      "Green Algae and Photosynthetic Growth on Cooling Tower Fill"
+    ],
+    "notFor": [
+      "Specific biocide products and dosing → use biocides-and-chemical-treatment",
+      "Legionella-specific risk assessment and treatment → use legionella-specific-control-and-prevention",
+      "Filter and membrane fouling mechanics → use filtration-and-membrane-systems"
+    ]
+  },
+  "case-studies-and-transition-planning": {
+    "description": "Real-world customer case studies, before/after comparisons, and planning documents for transitioning from one treatment approach to another. Covers technology migrations (e.g., chlorine to chlorine dioxide, copper-silver to ozone), reclaim water transitions, equipment retrofits, and lessons learned from specific installations. Pairs each case with quantitative outcomes and operational gotchas.",
+    "examples": [
+      "Ashburn VA Reclaim Water Case History in Open and Closed Cooling Systems",
+      "Transitioning a Hospital Cooling Plant from Chlorine to Chlorine Dioxide",
+      "Switching from Phosphonate to Polymer Inhibitor: A Year-Long Comparison",
+      "Data Center Migration from Conductivity-Based to Real-Time Monitoring",
+      "Six-Month Results from a Closed-Loop Glycol-to-Inhibited-Water Conversion"
+    ],
+    "notFor": [
+      "Marketing-style customer success stories about Nereus the company → use company-and-team",
+      "General how-to procedures without specific customer context → use system-maintenance-and-operations",
+      "Industry trend overviews not tied to a specific installation → use market-and-industry"
+    ]
+  },
+  "closed-loop-systems": {
+    "description": "Closed-loop hydronic systems including hot water, chilled water, and glycol loops. Covers makeup water tracking, leak detection, inhibitor selection for closed loops (nitrite, molybdate, sulfite-based), oxygen scavenging, pH and reserve maintenance, and compliance documentation specific to closed loops. Includes why tight loops should show near-zero makeup water usage.",
+    "examples": [
+      "Why Closed-Loop Makeup Meter Logs Matter for Compliance",
+      "Choosing Between Nitrite and Molybdate Closed-Loop Inhibitors",
+      "Diagnosing High Makeup Water on a Chilled Water Loop",
+      "Glycol Concentration and Inhibitor Reserve in Closed Loops",
+      "Sulfite Dosing for Oxygen Scavenging in Hot Water Systems"
+    ],
+    "notFor": [
+      "Open recirculating cooling towers → use cooling-tower-operations-and-management",
+      "Scale and corrosion mechanisms applicable to all system types → use scale-and-corrosion-inhibition",
+      "Direct-to-chip and immersion cooling loops → use direct-to-chip-cooling"
+    ]
+  },
+  "company-and-team": {
+    "description": "Content about Nereus the company. Covers company mission and what Nereus does, team bios and leadership, pricing and contact information, product positioning and value proposition, and how Nereus differs from competing platforms or service providers. Marketing-oriented content that introduces or describes the company itself.",
+    "examples": [
+      "About Nereus: Water and Energy Intelligence for Industrial Operators",
+      "Meet the Nereus Team",
+      "How to Get Pricing for the Nereus Platform",
+      "Why Nereus Built a Water Intelligence Platform",
+      "Nereus vs. Traditional Water Treatment Vendors"
+    ],
+    "notFor": [
+      "Customer success stories with specific technical results → use case-studies-and-transition-planning",
+      "Industry-wide trends not specific to Nereus → use market-and-industry",
+      "Technical documentation of Nereus product features as how-to → use monitoring-and-automation"
+    ]
+  },
+  "cooling-tower-operations-and-management": {
+    "description": "Day-to-day operation of open recirculating cooling towers. Covers cycles of concentration, blowdown control, makeup water management, drift and evaporation, fill maintenance, basin cleaning, fan and pump operation, seasonal startup/shutdown, and operator routines. The mechanical and operational side of cooling tower management, as distinct from the chemistry side.",
+    "examples": [
+      "Setting Cycles of Concentration for an Open Recirculating Tower",
+      "What Role Does Airflow Play in Open Cooling Tower Performance",
+      "Seasonal Startup Checklist for Idle Cooling Towers",
+      "Basin Cleaning and Fill Inspection Best Practices",
+      "Diagnosing Drift and Evaporation Loss in Cooling Towers"
+    ],
+    "notFor": [
+      "Water chemistry parameters and setpoints → use water-quality-and-chemistry",
+      "Biocide dosing and microbial control on cooling towers → use biocides-and-chemical-treatment",
+      "Direct-to-chip and liquid-cooled IT equipment → use direct-to-chip-cooling"
+    ]
+  },
+  "direct-to-chip-cooling": {
+    "description": "Liquid cooling systems for high-density computing including direct-to-chip cooling, rear-door heat exchangers, and immersion cooling. Covers fluid selection (water, dielectric fluids, glycol blends), loop design and topology, leak detection at the chip and rack level, fluid quality monitoring, and the operational differences between data-center liquid cooling and traditional building cooling.",
+    "examples": [
+      "Water Quality Requirements for Direct-to-Chip Cooling Loops",
+      "Choosing Between Single-Phase and Two-Phase Immersion Cooling",
+      "Leak Detection Strategies for Rack-Level Liquid Cooling",
+      "Dielectric Fluids for Immersion Cooling: Selection Criteria",
+      "Why Conductivity Limits Are Tighter in Direct-to-Chip Loops"
+    ],
+    "notFor": [
+      "Traditional closed-loop chilled water systems → use closed-loop-systems",
+      "Open cooling towers serving data center chillers → use cooling-tower-operations-and-management",
+      "General data center water trends and market sizing → use market-and-industry"
+    ]
+  },
+  "filtration-and-membrane-systems": {
+    "description": "Filtration and membrane technologies for industrial water treatment. Covers side-stream filters, sand filters, cartridge filters, bag filters, reverse osmosis, ultrafiltration, microfiltration, and nanofiltration. Includes filter sizing, backwash cycles, membrane fouling mechanisms, cleaning chemistry (CIP), differential pressure monitoring, and when filtration replaces or complements chemical treatment.",
+    "examples": [
+      "Sizing a Side-Stream Filter for an Open Cooling Tower",
+      "How RO Membrane Fouling Differs from Scale Formation",
+      "Backwash Cycle Optimization for Sand Filters",
+      "Clean-in-Place Chemistry for Spiral-Wound Membranes",
+      "When to Choose Bag Filters Over Cartridge Filters"
+    ],
+    "notFor": [
+      "Chemical inhibitor programs for scale prevention → use scale-and-corrosion-inhibition",
+      "Biofilm on membranes as a biological control topic → use biological-control-and-prevention",
+      "Source water and feedwater chemistry analysis → use water-quality-and-chemistry"
+    ]
+  },
+  "general-resources-and-templates": {
+    "description": "Reusable templates, checklists, log sheets, and reference documents that span multiple themes. Covers blank inspection forms, generic compliance checklists, document templates, troubleshooting trees, and reference tables that operators print and use as-is. Content that doesn't fit a specific technical theme but serves the broader knowledge base as a tool.",
+    "examples": [
+      "Cooling Tower Quarterly Inspection Checklist",
+      "Water Treatment Service Visit Log Template",
+      "Generic Compliance Document Checklist for Cooling Systems",
+      "Troubleshooting Decision Tree for Unexpected Conductivity Drops",
+      "Sample Specification Template for New Cooling Tower Procurement"
+    ],
+    "notFor": [
+      "Definitions of specific technical terms → use glossary",
+      "Topic-specific procedures (e.g., Legionella sampling forms) → use the matching theme",
+      "Regulatory citations and compliance requirements → use regulations-and-compliance"
+    ]
+  },
+  "glossary": {
+    "description": "Definitions of industry terms, abbreviations, and units of measure used across water treatment and energy systems. Covers chemistry terms (alkalinity, hardness, LSI), biological terms (HPC, ATP, sessile vs planktonic), regulatory terms (ASHRAE 188, OSHA), and technology terms (RO, MBR, MEC). Concise, definition-first content meant for lookup, not narrative reading.",
+    "examples": [
+      "What Is Langelier Saturation Index",
+      "Defining ATP, RLU, and What HPC Plate Counts Actually Measure",
+      "ASHRAE 188 and Why Water Management Plans Matter",
+      "Sessile vs Planktonic Microorganisms: What the Distinction Means",
+      "Common Water Chemistry Abbreviations: TDS, TSS, BOD, COD"
+    ],
+    "notFor": [
+      "Extended technical explanations of how a parameter changes system behavior → use water-quality-and-chemistry",
+      "Regulatory enforcement details → use regulations-and-compliance",
+      "Reusable forms and templates → use general-resources-and-templates"
+    ]
+  },
+  "legionella-specific-control-and-prevention": {
+    "description": "Legionella risk assessment, monitoring, and control specifically for industrial and building water systems. Covers Legionella pneumophila ecology, ASHRAE 188 water management plans, sampling protocols (CDC ELITE-recognized labs, culture vs qPCR), risk hierarchies, response thresholds, emergency disinfection (heat shock, hyperchlorination), and the operational differences between Legionella prevention and general microbial control.",
+    "examples": [
+      "Building a Legionella Water Management Plan Under ASHRAE 188",
+      "Culture vs qPCR for Legionella Detection: When to Use Each",
+      "Hyperchlorination Procedures for Legionella Remediation",
+      "Risk Hierarchy for Cooling Towers, DHW, and Decorative Fountains",
+      "Sampling Locations and Frequencies for Legionella Surveillance"
+    ],
+    "notFor": [
+      "General microbial control across all organisms → use biological-control-and-prevention",
+      "Chlorine and biocide chemistry in general → use biocides-and-chemical-treatment",
+      "Regulatory compliance broadly (not Legionella-specific) → use regulations-and-compliance"
+    ]
+  },
+  "market-and-industry": {
+    "description": "Industry-level trends, market sizing, regulatory landscape shifts, technology adoption curves, and competitive dynamics in industrial water treatment and cooling. Covers data center growth and water demand, evolving regulations across regions, sustainability reporting (ESG, water stewardship), industry consolidation, and where the water treatment industry is headed at a 1-3 year horizon.",
+    "examples": [
+      "Data Center Water Consumption Trends Through 2030",
+      "How AB-1668 and SB-606 Are Reshaping California Water Reporting",
+      "The Shift from Chemical Service to Outcome-Based Water Programs",
+      "Why Water Stewardship Reporting Is Moving Upstream from Discharge",
+      "Cooling Industry Response to Tighter Discharge Limits in the EU"
+    ],
+    "notFor": [
+      "Specific Nereus product positioning or company strategy → use company-and-team",
+      "Specific customer case studies → use case-studies-and-transition-planning",
+      "Specific regulations and how to comply with them → use regulations-and-compliance"
+    ]
+  },
+  "monitoring-and-automation": {
+    "description": "Sensors, instruments, controllers, and software platforms used to measure and automate water treatment. Covers conductivity probes, ORP, pH, ATP devices, corrosion coupons, online and offline analyzers, controller setpoint configuration, PLC and BMS integration, data logging, alarming, and real-time monitoring platforms including Nereus itself.",
+    "examples": [
+      "Choosing Between Conductivity-Based and Direct-Reading Cycle Controllers",
+      "ORP Setpoint Strategy for Continuous Biocide Dosing",
+      "Calibrating pH and Conductivity Probes in Cooling Tower Service",
+      "Real-Time Monitoring vs Weekly Service Visits: What Changes",
+      "Connecting a Water Treatment Controller to a Building Management System"
+    ],
+    "notFor": [
+      "Marketing content about the Nereus platform itself → use company-and-team",
+      "Operational procedures that don't involve instruments → use system-maintenance-and-operations",
+      "Water chemistry interpretation independent of measurement technology → use water-quality-and-chemistry"
+    ]
+  },
+  "regulations-and-compliance": {
+    "description": "Regulations, standards, and compliance requirements applicable to industrial water systems. Covers ASHRAE standards (188, 12, 90.1), local cooling tower registration ordinances (NYC, NJ, etc.), discharge permits, OSHA requirements, EPA rules, water reporting mandates, and the documentation operators must maintain. Includes how to interpret regulatory text and what auditors look for.",
+    "examples": [
+      "ASHRAE 188 Compliance: What Documentation Auditors Expect",
+      "New York City Cooling Tower Registration: Annual Requirements",
+      "EPA NPDES Permit Considerations for Cooling Tower Blowdown",
+      "California Water Reporting Under AB-1668: What Operators Must Track",
+      "How to Prepare for an OSHA Legionella Investigation"
+    ],
+    "notFor": [
+      "Legionella-specific control procedures and remediation → use legionella-specific-control-and-prevention",
+      "Industry-wide regulatory trends and where rules are heading → use market-and-industry",
+      "Reusable compliance checklist forms → use general-resources-and-templates"
+    ]
+  },
+  "scale-and-corrosion-inhibition": {
+    "description": "Mineral scale formation, corrosion mechanisms, and the inhibitor chemistries that prevent both. Covers calcium carbonate scale, calcium phosphate, silica, sulfate scales, general and pitting corrosion, galvanic corrosion, microbiologically influenced corrosion (MIC), and the chemistry of phosphonates, polymers, azoles, and molybdates. Includes saturation indices (LSI, RSI, Puckorius) and how to interpret them.",
+    "examples": [
+      "How Calcium Carbonate Scale Forms and Why It Matters",
+      "Choosing a Phosphonate Versus Polymer Scale Inhibitor",
+      "Tolyltriazole and Benzotriazole for Yellow Metal Corrosion Protection",
+      "Reading the Langelier and Puckorius Indices in Cooling Water",
+      "Diagnosing Pitting Corrosion on Carbon Steel Tower Components"
+    ],
+    "notFor": [
+      "Biological causes of corrosion specifically (MIC ecology) → use biological-control-and-prevention",
+      "Membrane and filter fouling rather than mineral scale → use filtration-and-membrane-systems",
+      "Closed-loop-specific inhibitor selection → use closed-loop-systems"
+    ]
+  },
+  "system-maintenance-and-operations": {
+    "description": "Hands-on maintenance and operations procedures that span multiple system types. Covers preventive maintenance schedules, equipment inspection routines, lockout-tagout, confined space entry for tower basins, equipment cleaning beyond basin work, pump and motor maintenance, and the general operator skills that don't fit a more specific theme. The 'how do I actually do this job day-to-day' content.",
+    "examples": [
+      "Preventive Maintenance Schedule for an Industrial Cooling Plant",
+      "Confined Space Entry Procedures for Cooling Tower Basin Cleaning",
+      "Pump and Motor Maintenance Routines for Water Treatment Service",
+      "Lockout-Tagout for Cooling Water Chemical Feed Systems",
+      "Operator Daily, Weekly, and Monthly Inspection Routines"
+    ],
+    "notFor": [
+      "Cooling-tower-specific operations (cycles, blowdown, drift) → use cooling-tower-operations-and-management",
+      "Sensor and controller maintenance specifically → use monitoring-and-automation",
+      "Closed-loop-specific procedures → use closed-loop-systems"
+    ]
+  },
+  "water-quality-and-chemistry": {
+    "description": "Water chemistry fundamentals and the parameters that drive treatment decisions. Covers source water analysis, alkalinity and hardness, pH and conductivity, TDS and TSS, dissolved oxygen, organics, makeup water characterization, and how each parameter interacts with the others. The 'why does this chemistry matter' theme that underpins biocide selection, scale prevention, and corrosion control.",
+    "examples": [
+      "Recommended pH Setpoint for Open Recirculating Cooling Systems",
+      "How Alkalinity and Hardness Interact in Cooling Water",
+      "Sodium Levels in Cooling Tower Water: Sources and Impacts",
+      "Characterizing Source Water Before Designing a Treatment Program",
+      "Why Dissolved Oxygen Matters Differently in Open vs Closed Systems"
+    ],
+    "notFor": [
+      "Definitions of chemistry terms in isolation → use glossary",
+      "Closed-loop-specific water chemistry → use closed-loop-systems",
+      "Filtration and membrane feedwater requirements → use filtration-and-membrane-systems"
+    ]
+  }
+}

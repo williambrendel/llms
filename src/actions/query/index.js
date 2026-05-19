@@ -176,14 +176,14 @@ const buildSimpleResponse = (analysis, rawQuery, text) => ({
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Main: runQuery
+// Main: run
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * End-to-end query handler.
  *
  * @async
- * @function runQuery
+ * @function run
  * @param {object} options
  * @param {string}   options.rawQuery       - User input as typed.
  * @param {object}   options.store          - Loaded VectorStore.
@@ -191,7 +191,9 @@ const buildSimpleResponse = (analysis, rawQuery, text) => ({
  *   (output of `buildAnalyzeQuery({...})`). Called as `await analyzeQuery(raw)`.
  * @param {SectionResolver} options.resolver - Section text resolver.
  * @param {Function} options.runLLM         - LLM call function with
- *   signature `(config, systemPrompt, userMessage) => Promise<response>`.
+ *   signature `(config, prompt) => Promise<response>` matching
+ *   `src/claude/run.js`. The system prompt is merged into
+ *   `config.system` by this action before calling runLLM.
  *   The orchestrator does NOT import an LLM module itself — callers wire
  *   the actual implementation (e.g. `require("../../llms/claude")`).
  * @param {object}   options.prompts        - Loaded prompt strings.
@@ -222,7 +224,7 @@ const buildSimpleResponse = (analysis, rawQuery, text) => ({
  *   followUpQuestions: string[],
  * }>}
  */
-const runQuery = async ({
+const run = async ({
   rawQuery,
   store,
   analyzeQuery,
@@ -281,6 +283,10 @@ const runQuery = async ({
   // happen quickly.
   const context = serializeQueryContext(analysis, results);
 
+  // System prompt → config.system. claude/run.js takes (config, prompt)
+  // where prompt is the user message; the system prompt lives in config.
+  const callConfig = { ...llmConfig, system: prompts.answer };
+
   let llmOutput = null;
   let validatorResult = { valid: false, errors: ["no attempt made"] };
   const totalAttempts = 1 + maxRetries;
@@ -288,7 +294,7 @@ const runQuery = async ({
   for (let attempt = 0; attempt < totalAttempts; attempt++) {
     let raw;
     try {
-      raw = await runLLM(llmConfig, prompts.answer, context);
+      raw = await runLLM(callConfig, context);
     } catch (err) {
       // Network/transport failure. Retry with the same input.
       validatorResult = { valid: false, errors: [`runLLM threw: ${err.message}`] };
@@ -313,7 +319,7 @@ const runQuery = async ({
       return buildSimpleResponse(analysis, rawQuery, fallbackAnswer);
     }
     const err = new Error(
-      `runQuery: LLM output failed validation after ${totalAttempts} attempts: ${validatorResult.errors.join("; ")}`
+      `run: LLM output failed validation after ${totalAttempts} attempts: ${validatorResult.errors.join("; ")}`
     );
     err.attempts = totalAttempts;
     err.errors = validatorResult.errors;
@@ -338,16 +344,16 @@ const runQuery = async ({
 };
 
 // Helper exports for tests and adjacent code.
-runQuery.TEMPLATES               = TEMPLATES;
-runQuery.TEMPLATE_RULES          = TEMPLATE_RULES;
-runQuery.pickGreetingTemplate    = pickGreetingTemplate;
-runQuery.enrichWithSectionText   = enrichWithSectionText;
-runQuery.buildSimpleResponse     = buildSimpleResponse;
+run.TEMPLATES               = TEMPLATES;
+run.TEMPLATE_RULES          = TEMPLATE_RULES;
+run.pickGreetingTemplate    = pickGreetingTemplate;
+run.enrichWithSectionText   = enrichWithSectionText;
+run.buildSimpleResponse     = buildSimpleResponse;
 
 /**
  * @ignore
  * Frozen self-referential export following project conventions.
  */
-module.exports = Object.freeze(Object.defineProperty(runQuery, "runQuery", {
-  value: runQuery,
+module.exports = Object.freeze(Object.defineProperty(run, "run", {
+  value: run,
 }));

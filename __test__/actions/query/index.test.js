@@ -1,7 +1,7 @@
 "use strict";
 
-const runQuery = require("../../../src/actions/query");
-const { TEMPLATES, TEMPLATE_RULES, pickGreetingTemplate } = runQuery;
+const run = require("../../../src/actions/query");
+const { TEMPLATES, TEMPLATE_RULES, pickGreetingTemplate } = run;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test fixtures — mocks for every injected dependency
@@ -84,7 +84,7 @@ const mockLLM = (config = {}) => {
     followUpQuestions: [],
   }];
   let callCount = 0;
-  const fn = jest.fn(async (llmConfig, prompt, userMessage) => {
+  const fn = jest.fn(async (llmConfig, prompt) => {
     const idx = Math.min(callCount, responses.length - 1);
     const r = responses[idx];
     callCount++;
@@ -112,7 +112,7 @@ const baseOptions = (overrides = {}) => ({
 // Path 1: Pure greeting fast path
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("runQuery — Path 1: pure greeting fast path", () => {
+describe("run — Path 1: pure greeting fast path", () => {
   test("returns templated greeting when segments empty + greeting true", async () => {
     const opts = baseOptions({
       analyzeQuery: mockAnalyzer({
@@ -121,7 +121,7 @@ describe("runQuery — Path 1: pure greeting fast path", () => {
         corrected: "hello",
       }),
     });
-    const result = await runQuery(opts);
+    const result = await run(opts);
     expect(result.answer.length).toBe(1);
     expect(result.answer[0].text).toBe(TEMPLATES.default);
     expect(result.followUpQuestions).toEqual([]);
@@ -129,7 +129,7 @@ describe("runQuery — Path 1: pure greeting fast path", () => {
   });
 
   test("uses greetingTemplate override when provided", async () => {
-    const result = await runQuery(baseOptions({
+    const result = await run(baseOptions({
       analyzeQuery: mockAnalyzer({
         segments: [],
         greeting: true,
@@ -141,7 +141,7 @@ describe("runQuery — Path 1: pure greeting fast path", () => {
   });
 
   test("dispatches to 'thanks' template on 'thank you'", async () => {
-    const result = await runQuery(baseOptions({
+    const result = await run(baseOptions({
       analyzeQuery: mockAnalyzer({
         segments: [],
         greeting: true,
@@ -152,7 +152,7 @@ describe("runQuery — Path 1: pure greeting fast path", () => {
   });
 
   test("dispatches to 'morning' template on 'good morning'", async () => {
-    const result = await runQuery(baseOptions({
+    const result = await run(baseOptions({
       analyzeQuery: mockAnalyzer({
         segments: [],
         greeting: true,
@@ -163,7 +163,7 @@ describe("runQuery — Path 1: pure greeting fast path", () => {
   });
 
   test("response includes analyzer metadata", async () => {
-    const result = await runQuery(baseOptions({
+    const result = await run(baseOptions({
       analyzeQuery: mockAnalyzer({
         segments: [],
         greeting: true,
@@ -182,13 +182,13 @@ describe("runQuery — Path 1: pure greeting fast path", () => {
 // Path 3: Synthesis LLM path
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("runQuery — Path 3: synthesis (LLM)", () => {
+describe("run — Path 3: synthesis (LLM)", () => {
   test("calls runLLM with the answer prompt + serialized context", async () => {
     const llm = mockLLM();
-    await runQuery(baseOptions({ runLLM: llm }));
+    await run(baseOptions({ runLLM: llm }));
     expect(llm).toHaveBeenCalledTimes(1);
-    const [config, prompt, userMessage] = llm.mock.calls[0];
-    expect(prompt).toBe("ANSWER PROMPT");
+    const [config, userMessage] = llm.mock.calls[0];
+    expect(config.system).toBe("ANSWER PROMPT");
     expect(userMessage).toContain("User query: what causes biofilm");
     expect(userMessage).toContain("User intent: TECHNICAL");
     expect(userMessage).toContain("Results:[1]");
@@ -199,7 +199,7 @@ describe("runQuery — Path 3: synthesis (LLM)", () => {
       { text: "Biofilm forms when...", source: { documentId: "doc|a", range: [0, 100] } },
       { text: " The matrix protects against disinfectants." },
     ];
-    const result = await runQuery(baseOptions({
+    const result = await run(baseOptions({
       runLLM: mockLLM({
         responses: [{ answer: llmAnswer, followUpQuestions: ["How fast?"] }],
       }),
@@ -209,7 +209,7 @@ describe("runQuery — Path 3: synthesis (LLM)", () => {
   });
 
   test("response includes all analyzer metadata fields", async () => {
-    const result = await runQuery(baseOptions({
+    const result = await run(baseOptions({
       rawQuery: "what causes biofilm",
       analyzeQuery: mockAnalyzer({
         corrected: "what causes biofilm",
@@ -247,7 +247,7 @@ describe("runQuery — Path 3: synthesis (LLM)", () => {
         "doc|b[200,300]": "Section B text",
       }),
     });
-    const result = await runQuery(opts);
+    const result = await run(opts);
     // Two segments → 2 search calls (both return the same hits, but
     // unionHits dedupes to 2 unique).
     expect(result.answer).toBeDefined();
@@ -255,13 +255,13 @@ describe("runQuery — Path 3: synthesis (LLM)", () => {
 
   test("missing section text is silently dropped (resolver returned null)", async () => {
     const llm = mockLLM();
-    await runQuery(baseOptions({
+    await run(baseOptions({
       runLLM: llm,
       resolver: mockResolver({}), // empty map; all lookups will use "default section text" fallback
     }));
     // With the mock resolver always returning a string, no drops happen.
     // A null-returning resolver tests the drop path:
-    await runQuery(baseOptions({
+    await run(baseOptions({
       runLLM: llm,
       resolver: {
         resolve: () => null,
@@ -270,7 +270,7 @@ describe("runQuery — Path 3: synthesis (LLM)", () => {
       },
     }));
     // Second call's userMessage should show empty results
-    const userMsg = llm.mock.calls[1][2];
+    const userMsg = llm.mock.calls[1][1];
     expect(userMsg).toContain("Results:[0]");
   });
 
@@ -285,14 +285,14 @@ describe("runQuery — Path 3: synthesis (LLM)", () => {
     const resolverMap = {};
     lots.forEach(h => { resolverMap[`${h.documentId}[0,100]`] = `text ${h.documentId}`; });
 
-    await runQuery(baseOptions({
+    await run(baseOptions({
       runLLM: llm,
       store: mockStore(lots),
       resolver: mockResolver(resolverMap),
       maxOutputRows: 5,
     }));
 
-    const userMsg = llm.mock.calls[0][2];
+    const userMsg = llm.mock.calls[0][1];
     expect(userMsg).toContain("Results:[5]");
   });
 });
@@ -301,15 +301,15 @@ describe("runQuery — Path 3: synthesis (LLM)", () => {
 // Path 2: Conversational LLM path (empty results, no greeting)
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("runQuery — Path 2: conversational via LLM", () => {
+describe("run — Path 2: conversational via LLM", () => {
   test("calls LLM with empty results when segments empty + no greeting", async () => {
     const llm = mockLLM();
-    await runQuery(baseOptions({
+    await run(baseOptions({
       runLLM: llm,
       analyzeQuery: mockAnalyzer({ segments: [], greeting: false }),
     }));
     expect(llm).toHaveBeenCalledTimes(1);
-    const userMsg = llm.mock.calls[0][2];
+    const userMsg = llm.mock.calls[0][1];
     expect(userMsg).toContain("Results:[0]");
   });
 });
@@ -318,7 +318,7 @@ describe("runQuery — Path 2: conversational via LLM", () => {
 // Retry loop on validator failure
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("runQuery — retry on validator failure", () => {
+describe("run — retry on validator failure", () => {
   test("retries when first response is invalid, succeeds on second", async () => {
     const llm = mockLLM({
       responses: [
@@ -326,7 +326,7 @@ describe("runQuery — retry on validator failure", () => {
         { answer: [{ text: "ok" }], followUpQuestions: [] }, // second: good
       ],
     });
-    const result = await runQuery(baseOptions({ runLLM: llm }));
+    const result = await run(baseOptions({ runLLM: llm }));
     expect(llm.callCount()).toBe(2);
     expect(result.answer[0].text).toBe("ok");
   });
@@ -339,7 +339,7 @@ describe("runQuery — retry on validator failure", () => {
         { answer: [{ text: "ok" }], followUpQuestions: [] },
       ],
     });
-    const result = await runQuery(baseOptions({ runLLM: llm, maxRetries: 2 }));
+    const result = await run(baseOptions({ runLLM: llm, maxRetries: 2 }));
     expect(llm.callCount()).toBe(3);
     expect(result.answer[0].text).toBe("ok");
   });
@@ -351,7 +351,7 @@ describe("runQuery — retry on validator failure", () => {
         { answer: [{ text: "ok" }], followUpQuestions: [] },
       ],
     });
-    const result = await runQuery(baseOptions({ runLLM: llm }));
+    const result = await run(baseOptions({ runLLM: llm }));
     expect(llm.callCount()).toBe(2);
     expect(result.answer[0].text).toBe("ok");
   });
@@ -360,7 +360,7 @@ describe("runQuery — retry on validator failure", () => {
     const llm = mockLLM({
       responses: [{ invalid: true }, { invalid: true }, { invalid: true }],
     });
-    await expect(runQuery(baseOptions({ runLLM: llm, maxRetries: 2 }))).rejects.toThrow(/failed validation after 3 attempts/);
+    await expect(run(baseOptions({ runLLM: llm, maxRetries: 2 }))).rejects.toThrow(/failed validation after 3 attempts/);
     expect(llm.callCount()).toBe(3);
   });
 
@@ -368,7 +368,7 @@ describe("runQuery — retry on validator failure", () => {
     const llm = mockLLM({
       responses: [{ invalid: true }, { invalid: true }, { invalid: true }],
     });
-    const result = await runQuery(baseOptions({
+    const result = await run(baseOptions({
       runLLM: llm,
       maxRetries: 2,
       fallbackAnswer: "Sorry, I'm having trouble. Please try again.",
@@ -380,7 +380,7 @@ describe("runQuery — retry on validator failure", () => {
 
   test("fallback path still includes analyzer metadata", async () => {
     const llm = mockLLM({ responses: [{ invalid: true }, { invalid: true }, { invalid: true }] });
-    const result = await runQuery(baseOptions({
+    const result = await run(baseOptions({
       runLLM: llm,
       fallbackAnswer: "fallback text",
     }));
@@ -391,14 +391,14 @@ describe("runQuery — retry on validator failure", () => {
 
   test("maxRetries=0 means single attempt then throw", async () => {
     const llm = mockLLM({ responses: [{ invalid: true }] });
-    await expect(runQuery(baseOptions({ runLLM: llm, maxRetries: 0 }))).rejects.toThrow(/failed validation after 1 attempts/);
+    await expect(run(baseOptions({ runLLM: llm, maxRetries: 0 }))).rejects.toThrow(/failed validation after 1 attempts/);
     expect(llm.callCount()).toBe(1);
   });
 
   test("error includes attempts count and last output", async () => {
     const llm = mockLLM({ responses: [{ invalid: true }, { invalid: true }, { invalid: true }] });
     try {
-      await runQuery(baseOptions({ runLLM: llm, maxRetries: 2 }));
+      await run(baseOptions({ runLLM: llm, maxRetries: 2 }));
       throw new Error("expected to throw");
     } catch (err) {
       expect(err.attempts).toBe(3);
@@ -449,17 +449,17 @@ describe("pickGreetingTemplate", () => {
 // Module export
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("runQuery — module export", () => {
+describe("run — module export", () => {
   test("module is the function itself", () => {
-    expect(typeof runQuery).toBe("function");
+    expect(typeof run).toBe("function");
   });
 
   test("module is frozen", () => {
-    expect(Object.isFrozen(runQuery)).toBe(true);
+    expect(Object.isFrozen(run)).toBe(true);
   });
 
-  test("self-referential .runQuery property", () => {
-    expect(runQuery.runQuery).toBe(runQuery);
+  test("self-referential .run property", () => {
+    expect(run.run).toBe(run);
   });
 
   test("exposes TEMPLATES", () => {

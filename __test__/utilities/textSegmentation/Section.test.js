@@ -354,3 +354,118 @@ describe("Section — .flatten()", () => {
     expect(wrapped.end).toBe(12);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// .contentSections — ancestor chaining across nested headers
+//
+// These tests verify the documented behavior: ancestors should chain
+// through ALL parent headers, even when a parent header section has no
+// direct body content (structural-only). The structural-only chunk is
+// filtered from the output, but its header should still appear in the
+// ancestor chain of deeper chunks.
+//
+// If any of these tests fail, the docstring promise is wrong and we
+// have a real bug in the walker — or my reading of the docstring is
+// off. Either outcome is useful information.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const segmentTextSections = require("../../../src/utilities/textSegmentation/segmentTextSections");
+
+describe("Section — .contentSections() ancestor chaining", () => {
+  test("H1 → H2 → H3 with body only at H3: ancestors chain through all levels", () => {
+    // Sub has no direct body (structural-only); Deep has body.
+    // Expected: ONE chunk for Deep's body, with ancestors=[Top, Sub], header=Deep.
+    const md = `# Top
+
+Content under top.
+
+## Sub
+
+### Deep
+
+Some deep content here.`;
+
+    const tree = segmentTextSections(md);
+    const chunks = tree.contentSections();
+
+    // Find the chunk whose body text mentions "deep content".
+    const deep = chunks.find(c =>
+      md.slice(c.content.start, c.content.end).includes("deep content")
+    );
+    expect(deep).toBeDefined();
+
+    // Its own header should be "Deep".
+    expect(deep.header).toBeDefined();
+    expect(deep.header.extractTitle(md)).toBe("Deep");
+
+    // Its ancestors should be [Top, Sub] — full chain even though Sub
+    // had no body and didn't emit its own chunk.
+    const ancestorTitles = (deep.ancestors || []).map(h => h.extractTitle(md));
+    expect(ancestorTitles).toEqual(["Top", "Sub"]);
+  });
+
+  test("H1 → H2 → H3 with body at every level: each chunk has correct ancestors", () => {
+    const md = `# Top
+
+Content under top.
+
+## Sub
+
+Content under sub.
+
+### Deep
+
+Some deep content here.`;
+
+    const tree = segmentTextSections(md);
+    const chunks = tree.contentSections();
+
+    // Find chunk for each body level.
+    const findByBody = needle => chunks.find(c =>
+      md.slice(c.content.start, c.content.end).includes(needle)
+    );
+
+    const topChunk  = findByBody("Content under top");
+    const subChunk  = findByBody("Content under sub");
+    const deepChunk = findByBody("deep content here");
+
+    expect(topChunk).toBeDefined();
+    expect(subChunk).toBeDefined();
+    expect(deepChunk).toBeDefined();
+
+    // Top's own header is Top; its ancestors are empty.
+    expect(topChunk.header?.extractTitle(md)).toBe("Top");
+    expect((topChunk.ancestors || []).length).toBe(0);
+
+    // Sub's own header is Sub; its ancestors are [Top].
+    expect(subChunk.header?.extractTitle(md)).toBe("Sub");
+    expect((subChunk.ancestors || []).map(h => h.extractTitle(md))).toEqual(["Top"]);
+
+    // Deep's own header is Deep; its ancestors are [Top, Sub].
+    expect(deepChunk.header?.extractTitle(md)).toBe("Deep");
+    expect((deepChunk.ancestors || []).map(h => h.extractTitle(md))).toEqual(["Top", "Sub"]);
+  });
+
+  test("H2 with no body but with H3 descendant: H2 still appears in H3's body chunk's ancestors", () => {
+    // Minimal repro: H2 has zero body, H3 has body. H2 should NOT be
+    // dropped from the ancestor chain just because it has no direct
+    // content.
+    const md = `## EmptyMiddle
+
+### Leaf
+
+Leaf body content.`;
+
+    const tree = segmentTextSections(md);
+    const chunks = tree.contentSections();
+
+    // The Leaf body chunk should have EmptyMiddle in its ancestors.
+    const leaf = chunks.find(c =>
+      md.slice(c.content.start, c.content.end).includes("Leaf body content")
+    );
+    expect(leaf).toBeDefined();
+
+    const ancestorTitles = (leaf.ancestors || []).map(h => h.extractTitle(md));
+    expect(ancestorTitles).toContain("EmptyMiddle");
+  });
+});

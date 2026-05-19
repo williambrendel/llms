@@ -3,12 +3,12 @@
 
 /**
  * @file smokeTestQuery.js
- * @description End-to-end smoke test for the runQuery orchestrator.
+ * @description End-to-end smoke test for the run orchestrator.
  *
  * Exercises the full query pipeline against the real corpus + real
  * Claude LLM. Loads the VectorStore, builds the analyzer with
  * SpellEngine, constructs the SectionResolver, reads the answer prompt,
- * and runs ~15 curated queries through runQuery.
+ * and runs ~15 curated queries through run.
  *
  * Grading is structural — we verify each response has the right SHAPE
  * (valid schema, sources present where expected, follow-ups generated),
@@ -32,12 +32,12 @@ const path = require("path");
 const VectorStore        = require("../../src/VectorStore");
 const buildAnalyzeQuery  = require("../../src/xenova/buildAnalyzeQuery");
 const SectionResolver    = require("../../src/actions/query/SectionResolver");
-const runQuery           = require("../../src/actions/query");
+const run           = require("../../src/actions/query");
 
 // LLM runner — same module the old endpoint used.
-const runLLM             = require("../../llms/claude");
-const { HAIKU45_CONFIG } = require("../../llms/claude/config");
-const parseResponseJson  = require("../../io/parseResponseJson");
+const runLLM             = require("../../src/claude");
+const { HAIKU45_CONFIG } = require("../../src/claude/config");
+const parseResponseJson  = require("../../src/utilities/parseResponseJson");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Config
@@ -45,7 +45,7 @@ const parseResponseJson  = require("../../io/parseResponseJson");
 
 const args   = process.argv.slice(2);
 const binDir = path.resolve(args[0] || "scripts/dataset");
-const mdDir  = path.resolve(args[1] || "scripts/data");
+const mdDir  = path.resolve(args[1] || "scripts/markdowns");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Output helpers
@@ -75,7 +75,7 @@ const grade = (stats, ok, msg) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LLM wrapper — runQuery expects a function that returns the parsed JSON,
+// LLM wrapper — run expects a function that returns the parsed JSON,
 // not the raw response envelope. We wrap `run` + `parseResponseJson` here.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -83,18 +83,20 @@ let llmCallCount = 0;
 
 /**
  * Wraps the raw Claude `run` to:
- *   1. Call the LLM with the same signature `run(config, prompt, userMessage)`.
- *   2. Parse the JSON out of the response envelope via `parseResponseJson`.
+ *   1. Call the LLM with the same signature `run(config, prompt)`
+ *      matching `src/claude/run.js` — system prompt is in config.system,
+ *      prompt is the user message.
+ *   2. Parse the JSON via `parseResponseJson`, which accepts either a
+ *      Response envelope or a plain string.
  *   3. Count the call so the smoke test can report totals.
  *
- * Returns the parsed JSON directly. The validator inside runQuery sees
+ * Returns the parsed JSON directly. The validator inside run sees
  * the shape it expects.
  */
-const wrappedRunLLM = async (config, prompt, userMessage) => {
+const wrappedRunLLM = async (config, prompt) => {
   ++llmCallCount;
-  const response = await runLLM(config, prompt, userMessage);
-  const parsed = parseResponseJson(response);
-  return parsed;
+  const response = await runLLM(config, prompt);
+  return parseResponseJson(response);
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -149,15 +151,19 @@ const QUERIES = [
 // ─────────────────────────────────────────────────────────────────────────────
 
 const setup = async () => {
-  console.log(`Smoke test: runQuery against real corpus + Claude Haiku`);
+  console.log(`Smoke test: run against real corpus + Claude Haiku`);
   console.log(`  binDir: ${binDir}`);
   console.log(`  mdDir:  ${mdDir}`);
 
   const t0 = Date.now();
 
   console.log(`\nLoading VectorStore...`);
-  const store = await VectorStore.load(binDir);
-  console.log(`  ${store.documents.length} documents loaded`);
+  // VectorStore.create(path) is the one-shot factory:
+  // `new VectorStore().load(path)` rolled into one. VectorStore extends
+  // Array, so `store.length` and `store[i]` work directly — no
+  // `.documents` accessor needed.
+  const store = await VectorStore.create(binDir);
+  console.log(`  ${store.length} documents loaded`);
 
   console.log(`Building SectionResolver...`);
   const resolver = await SectionResolver.create(mdDir);
@@ -286,7 +292,7 @@ const main = async () => {
     const t0 = Date.now();
     let response;
     try {
-      response = await runQuery({
+      response = await run({
         rawQuery:     query.text,
         store:        deps.store,
         analyzeQuery: deps.analyzeQuery,

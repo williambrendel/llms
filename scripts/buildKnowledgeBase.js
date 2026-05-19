@@ -3,55 +3,76 @@
 /**
  * @file scripts/buildKnowledgeBase.js
  * @description CLI entry point for building VECT `.bin` knowledge bases
- * from markdown source.
+ * from a directory (or single file) of `.md` sources.
  *
- * Pipeline (per input file):
+ * Pipeline per file:
  *   1. Read raw markdown.
- *   2. `generateKnowledgeBase` — segments the text, vectorizes section
- *      bodies, calls the LLM to produce retrieval rows, vectorizes those
- *      rows. Returns an array of `{ range, vectors }` section records.
- *   3. `resolveOutputPath` — computes where the `.bin` should land,
- *      mirroring the source's subtree under `outputDir`.
- *   4. `Document.fromSpec` + `doc.toBuffer` + `fs.writeFile` — materialize
- *      the VECT binary and persist it. (See "Why two steps, not
- *      doc.write" below.)
- *
- * Orchestration:
- *   All files run in parallel via `Promise.allSettled`, but LLM calls
- *   within each file share a single global concurrency pool (`llmLimit`).
- *   This lets file-level parallelism scale arbitrarily without ever
- *   exceeding the LLM provider's rate limit.
+ *   2. Compute documentId + output path via {@link resolveOutputPath}.
+ *   3. Feed into `runBinary.batch` — the binary pipeline does
+ *      segmentation, body vectorization (bucket strategy), LLM
+ *      augmentation (question/anchor/variant generation), and Document
+ *      serialization. Returns a Buffer per input.
+ *   4. Write Buffers to disk under the mirrored subtree.
  *
  * Failure model:
- *   Per-section LLM failures are isolated by `generateKnowledgeBase` and
- *   reported via `onSectionError`. A file that fails entirely (e.g. read
- *   error, write error) is reported via the top-level `Promise.allSettled`
- *   loop. Other files keep going regardless.
+ *   - `Promise.allSettled` at the batch level means per-file failures
+ *     don't tear down the whole run
+ *   - Hard failures (any stage throws) get reported per-file with
+ *     `{stage, documentId, message}`
+ *   - Soft failures (per-section LLM hiccups, individual vector rejects)
+ *     get aggregated and counted at the end
+ *   - Non-zero exit code on any hard failure so CI catches it
+ *
+ * Concurrency:
+ *   - Shared `makeLimit(N)` across all files in the batch caps the total
+ *     in-flight LLM count regardless of how many sections fan out
+ *   - Default N=8, override with `NEREUS_LLM_CONCURRENCY` env var
  *
  * Usage:
  *   node scripts/buildKnowledgeBase.js <input> <output-dir> [prompt-file]
  *
  *   <input>         File or directory of `.md` sources.
  *   <output-dir>    Where `.bin` files are written. Subtree mirrors input.
- *   [prompt-file]   LLM prompt for row generation (default:
- *                   scripts/prompts/facts-database-prompt.ppl).
+ *   [prompt-file]   Augmentation prompt path. Defaults to
+ *                   src/actions/generate/binary/prompts/augment-section.ppl
  */
 
 const fs       = require("fs").promises;
 const fsSync   = require("fs");
 const path     = require("path");
 
-const getFilenames    = require("./io/getFilenames");
-const loadFile        = require("./io/loadFile");
-const makeLimit       = require("../src/utilities/makeLimit");
-const formatDuration  = require("./utilities/formatDuration");
+const runBinary       = require("../src/actions/generate/binary");
 const vectorize       = require("../src/xenova/vectorize");
-const Document        = require("../src/VectorStore/Document");
+const claudeRun       = require("../src/claude");
+const { SONNET45_CONFIG } = require("../src/claude/config");
+const makeLimit       = require("../src/utilities/makeLimit");
+const makeRateLimit   = require("../src/utilities/makeLimit");
+const formatDuration  = require("./utilities/formatDuration");
+const resolveOutputPath = require("./io/resolveOutputPath");
 
-const {
-  generateKnowledgeBase,
-  resolveOutputPath,
-} = require("../src/knowledgeBase");
+/**
+ * LLM caller for the build pipeline.
+ *
+ * Wraps `claudeRun` (the project's generic Claude entry point) with a
+ * rate-limit acquire so sustained req/sec stays under NEREUS_LLM_RATE
+ * regardless of how many calls are concurrently in flight. Prevents
+ * burst-driven 429s when many sections finish their previous step at
+ * the same moment.
+ *
+ * The action layer (augmentSections) is responsible for merging the
+ * system prompt into `config.system` and unwrapping the Response
+ * envelope to its text body. This wrapper does neither — it just
+ * paces the call and forwards everything else unchanged.
+ *
+ * The rate-limit acquire is defined later (after CLI args parse) and
+ * referenced via closure. See `rateLimit` below.
+ */
+let rateLimit;   // assigned below once env vars are parsed
+
+const runLLM = async (config, prompt) => {
+  await rateLimit();
+  return claudeRun(config, prompt);
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CLI args
@@ -60,210 +81,219 @@ const {
 const args = process.argv.slice(2);
 const inputArg       = args[0];
 const outputDir      = args[1];
-const promptFilename = args[2] || "scripts/prompts/facts-database-prompt.ppl";
+const promptFilename = args[2]
+  || "src/actions/generate/binary/prompts/augment-section.ppl";
 
-// Resolve the input root once. When the input is a directory, all source
-// filenames are interpreted relative to it to produce the mirrored output
-// subtree. When the input is a single file, sourceRoot is set to the file's
-// directory so the file ends up flat under outputDir (no synthetic subdir
-// gets created from a leading folder we don't actually mean to mirror).
+if (!inputArg || !outputDir) {
+  console.error("Usage: node scripts/buildKnowledgeBase.js <input> <output-dir> [prompt-file]");
+  process.exit(2);
+}
+
 const inputAbs   = path.resolve(inputArg);
 const inputStat  = fsSync.statSync(inputAbs);
 const sourceRoot = inputStat.isDirectory() ? inputAbs : path.dirname(inputAbs);
 
-// `filenames` may be a single-entry list (file input) or a recursive
-// listing under the input directory. Either way, processOne handles each
-// entry uniformly.
-const filenames = getFilenames(inputArg);
+// Concurrency limit for LLM calls — shared across all files in the batch.
+// Caps how many requests are *in flight* simultaneously.
+// Override with NEREUS_LLM_CONCURRENCY env var.
+const concurrency = parseInt(process.env.NEREUS_LLM_CONCURRENCY, 10) || 8;
+const llmLimit = makeLimit(concurrency);
 
-// Shared concurrency limiter across all files. LLM calls from every file
-// pass through this single pool so the total in-flight count is bounded
-// regardless of how many files run in parallel. Without this shared limit,
-// processing N files in parallel could fan out to N × sections-per-file
-// LLM calls at once, easily blowing past the provider's rate limit.
+// Rate limit for LLM calls — caps sustained requests-per-second across
+// the entire run. Token-bucket pacing prevents burst-driven 429s that
+// makeLimit alone cannot prevent (since N callers finishing at the
+// same instant fire N simultaneous requests).
 //
-// The limit (8) was tuned empirically — high enough to keep the pipeline
-// busy, low enough to leave headroom for the provider's burst policy.
-const llmLimit = makeLimit(8);
+// Defaults: 2 req/sec sustained, bursts up to 4. Tune per Anthropic tier:
+//   Tier 1 (Sonnet):  ~0.5 req/sec safe
+//   Tier 2 (Sonnet):  ~0.8 req/sec safe
+//   Tier 3 (Sonnet):  ~16 req/sec safe
+//   Haiku tends to have higher limits — bump rate accordingly.
+const ratePerSec = parseFloat(process.env.NEREUS_LLM_RATE)    || 2;
+const rateBurst  = parseInt(process.env.NEREUS_LLM_BURST, 10) || Math.ceil(ratePerSec * 2);
+
+// Assign the closure-captured rateLimit referenced by runLLM above.
+rateLimit = makeRateLimit({ rate: ratePerSec, burst: rateBurst });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Per-file processing
+// Discover input files
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Process a single source file end-to-end: read, generate sections,
- * serialize as VECT v2, write to disk, log a summary line.
+ * Walk the input path and collect every `.md` file. Uses `fs.readdir`
+ * with `recursive: true` (Node 18.17+). Single-file inputs return just
+ * that file regardless of extension.
  *
- * Returns a small per-file record for the top-level summary. Throws on
- * unrecoverable errors (file read failure, write failure, malformed input)
- * — `Promise.allSettled` in `main` will catch and report those.
+ * @returns {string[]} Absolute file paths.
  */
-const processOne = async filename => {
-  const fileStart = Date.now();
-  const { data }  = await loadFile(filename);
+const collectFiles = () => {
+  if (inputStat.isFile()) return [inputAbs];
 
-  // ── Step 1: Generate section records ──────────────────────────────────
-  // generateKnowledgeBase does the heavy lifting: segments the markdown,
-  // vectorizes bodies under a word-count bucket heuristic, fans out one
-  // LLM call per section (gated by llmLimit), then attaches the LLM-
-  // derived row vectors. All vector promises are awaited before this
-  // returns.
-  //
-  // The two callbacks let the build script handle logging without coupling
-  // the generator to a logger. `onSection` fires after each section's body
-  // vectorization is queued; `onSectionError` fires when an LLM call fails
-  // (other sections continue).
-  const sections = await generateKnowledgeBase(data, prompt, {
-    limit: llmLimit,
-    onSection: (i, { wordCount, bucket, bodyVecs }) => {
-      console.log(
-        `Section ${i}: ${wordCount} words → ${bucket} ` +
-        `(${bodyVecs} body vector${bodyVecs === 1 ? "" : "s"})`
-      );
-    },
-    onSectionError: (i, err) => {
-      console.error(`🚨  Section ${i} failed:`, err?.message || err);
-    },
+  const entries = fsSync.readdirSync(inputAbs, {
+    recursive: true, withFileTypes: true,
   });
-
-  // ── Step 2: Resolve the output path ───────────────────────────────────
-  // resolveOutputPath handles two things:
-  //   - mirrors the source's subtree under outputDir (biology/foo.md →
-  //     <outputDir>/biology/foo.bin)
-  //   - derives the documentId from the source filename
-  //
-  // Pure function — no I/O. The actual write happens below.
-  const { outPath, documentId } = resolveOutputPath(filename, outputDir, sourceRoot);
-
-  // ── Step 3: Materialize and write the VECT binary ─────────────────────
-  // Document.write does NOT create intermediate directories; that's an
-  // intentional separation of concerns (path layout is a build-pipeline
-  // job, not a Document job). So we mkdir first.
-  await fs.mkdir(path.dirname(outPath), { recursive: true });
-
-  // Build the Document. fromSpec is sync and cheap — allocates the index
-  // and vec buffers, copies vectors into the vec buffer, computes
-  // vecOffsets. No I/O.
-  const doc = Document.fromSpec({ documentId, vecDim: dim, sections });
-
-  // Why two steps (toBuffer + writeFile) instead of doc.write(outPath):
-  //
-  //   doc.write(outPath) would internally do `fs.writeFile(outPath,
-  //   this.toBuffer())` — exactly the two lines below in one call.
-  //   Convenient when the byte size doesn't matter to the caller.
-  //
-  //   We split the steps here because the summary log line reports the
-  //   file size in KB. Going through doc.write would force us to either:
-  //     - read the file back from disk after writing (extra I/O), or
-  //     - call doc.toBuffer() a second time just for .length (serializes
-  //       twice — wasted work).
-  //
-  //   Calling toBuffer() once and reusing the buffer for both the write
-  //   and the byte count is the cleanest path. The trade-off is that we
-  //   show the lower-level mechanics in this hot loop, but the comment
-  //   above the alternative makes the choice traceable.
-  const buffer = doc.toBuffer();
-  await fs.writeFile(outPath, buffer);
-
-  // ── Step 4: Summary ───────────────────────────────────────────────────
-  // Compute total vector count from the section records. Could have read
-  // it off the Document (doc.totalVecs is exposed), but summing here keeps
-  // the summary block self-contained and makes the relationship between
-  // the section list and the vector count obvious.
-  let totalVecs = 0;
-  for (let i = 0; i !== sections.length; ++i) totalVecs += sections[i].vectors.length;
-
-  const durationMs = Date.now() - fileStart;
-
-  console.log(
-    `Wrote ${outPath}: ` +
-    `documentId=${documentId}, ` +
-    `${sections.length} sections, ${totalVecs} vectors, ` +
-    `${(buffer.length / 1024).toFixed(1)}KB, ` +
-    `${formatDuration(durationMs)}`
-  );
-
-  return { filename, durationMs };
+  return entries
+    .filter(e => e.isFile() && e.name.endsWith(".md"))
+    .map(e => path.join(e.parentPath || e.path || inputAbs, e.name));
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Run
+// Main
 // ─────────────────────────────────────────────────────────────────────────────
 
-// `prompt` and `dim` are loaded once in main() but referenced by processOne
-// through closure. Module-scoped `let` keeps them out of the inner function
-// signature without making them globals — they're parameters to the build
-// run, not to any individual file's processing.
-let prompt;
-let dim;
-
-/**
- * Orchestrates the full build run:
- *   1. Loads the prompt file (one-time read).
- *   2. Probes the embedding dimension by vectorizing a dummy string. We
- *      can't hardcode this — it depends on the encoder model in use. A
- *      single probe at the start avoids inconsistency if the model
- *      changes between builds.
- *   3. Echoes the resolved paths and dim so the user can verify the build
- *      is reading what they expect.
- *   4. Fans out processOne across all input files in parallel. The shared
- *      llmLimit (defined at module top) keeps the LLM call rate bounded
- *      regardless of how many files are processed concurrently.
- *   5. Aggregates pass/fail counts and times. Per-file failures are
- *      reported in line but don't abort the run — other files keep going.
- *   6. Sets a non-zero exit code if anything failed, so CI surfaces the
- *      problem.
- */
 const main = async () => {
   const runStart = Date.now();
 
-  // Prompt is identical across all files in a run, so we read once.
-  prompt = await fs.readFile(promptFilename, "utf-8");
-
-  // Probe the embedding model to discover its output dimension. We use
-  // this dim everywhere downstream — Document.fromSpec needs it, the
-  // header records it, the loader verifies it. Doing this once at the
-  // start guarantees every .bin in this run uses the same dim.
+  // Boot setup: load augmentation prompt and probe the embedder.
+  // Both are one-time costs; doing them up front keeps each file's
+  // processing focused on the actual pipeline work.
+  const augmentPrompt = await fs.readFile(promptFilename, "utf-8");
   const probe = await vectorize("probe");
-  dim = probe.length;
+  const vecDim = probe.length;
 
-  console.log(`Embedding dimension: ${dim}`);
-  console.log(`Source root:        ${sourceRoot}`);
-  console.log(`Output directory:   ${path.resolve(outputDir)}`);
+  const filenames = collectFiles();
 
-  // Parallel processing of all files. Promise.allSettled (not
-  // Promise.all) so that one bad file doesn't tear down the entire run —
-  // we want to know about every failure, not just the first one.
-  const results = await Promise.allSettled(filenames.map(processOne));
+  console.log(`Embedding dimension: ${vecDim}`);
+  console.log(`Source root:         ${sourceRoot}`);
+  console.log(`Output directory:    ${path.resolve(outputDir)}`);
+  console.log(`LLM concurrency:     ${concurrency}`);
+  console.log(`LLM rate:            ${ratePerSec} req/sec (burst ${rateBurst})`);
+  console.log(`Files to process:    ${filenames.length}`);
+  console.log();
 
-  // Tally outcomes for the final summary.
-  let succeeded = 0, failed = 0;
-  for (const r of results) {
-    if (r.status === "fulfilled") {
-      ++succeeded;
+  // Soft error aggregation. The binary pipeline's `onError` callback
+  // fires for per-section LLM failures (augment stage) and per-vector
+  // rejections (encode stage). These don't abort the file but they
+  // ARE real failures — sections that fired but produced no augmented
+  // vectors. The target is zero. Anything else is a bug to investigate,
+  // not noise to tolerate.
+  //
+  // We log the first 20 verbatim so when the build finishes with
+  // non-zero soft errors, we can categorize what went wrong (rate limit?
+  // bad JSON? truncation? specific section?) without re-running.
+  const softErrors = { augment: 0, encode: 0 };
+  const SOFT_ERROR_LOG_LIMIT = 20;
+  let softErrorsLogged = 0;
+  const onError = (err) => {
+    if (err.stage in softErrors) softErrors[err.stage]++;
+    if (softErrorsLogged < SOFT_ERROR_LOG_LIMIT) {
+      const cause = err.cause && err.cause.message ? err.cause.message : "(no cause message)";
+      const where = `${err.documentId || "?"} sec=${err.sectionIndex ?? "?"}`;
+      console.error(`  ! soft[${err.stage}] ${where}: ${cause}`);
+      softErrorsLogged++;
+    }
+  };
+
+  // Build per-file inputs. We compute outPath up front so we know
+  // where to write each Buffer after the batch returns.
+  const inputs = filenames.map((filename) => {
+    const { outPath, documentId } = resolveOutputPath(filename, outputDir, sourceRoot);
+    return {
+      filename,
+      outPath,
+      documentId,
+      markdown:    null,       // populated below
+      vecDim,
+      vectorize,
+      runLLM,
+      prompt:      augmentPrompt,
+      llmConfig:   SONNET45_CONFIG,
+      limit:       llmLimit,
+      maxRetries:  4,           // augmentation occasionally hits rate-limit windows; allow several retries
+      onError,
+    };
+  });
+
+  // Read all markdown sources in parallel.
+  await Promise.all(inputs.map(async (input) => {
+    input.markdown = await fs.readFile(input.filename, "utf-8");
+  }));
+
+  // The binary pipeline runs all files in parallel via
+  // Promise.allSettled internally. Per-file failures are captured, not
+  // thrown.
+  const results = await runBinary.batch(inputs);
+
+  // Walk results: write fulfilled Buffers, log rejected ones.
+  let succeeded = 0;
+  let failed    = 0;
+  const failures = [];
+
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    const input  = inputs[i];
+
+    if (result.status === "fulfilled") {
+      try {
+        const buffer = result.value;
+        await fs.mkdir(path.dirname(input.outPath), { recursive: true });
+        await fs.writeFile(input.outPath, buffer);
+
+        console.log(
+          `✓ ${input.outPath}: documentId=${input.documentId}, ` +
+          `${(buffer.length / 1024).toFixed(1)}KB`
+        );
+        succeeded++;
+      } catch (writeErr) {
+        failed++;
+        failures.push({
+          filename:   input.filename,
+          documentId: input.documentId,
+          stage:      "write",
+          message:    writeErr.message,
+        });
+        console.error(`✗ ${input.filename}: write failed — ${writeErr.message}`);
+      }
     } else {
-      ++failed;
-      // The error came from processOne — typically a read, mkdir, or
-      // write failure. Section-level LLM failures are caught inside
-      // generateKnowledgeBase and reported via onSectionError, so they
-      // don't reach here.
-      console.error(`🚨  File failed:`, r.reason?.message || r.reason);
+      failed++;
+      const reason = result.reason;
+      failures.push({
+        filename:   input.filename,
+        documentId: reason.documentId || input.documentId,
+        stage:      reason.stage || "unknown",
+        message:    reason.message,
+      });
+      console.error(
+        `✗ ${input.filename}: failed at stage="${reason.stage}" — ${reason.message}`
+      );
     }
   }
 
+  // Summary.
   const totalMs = Date.now() - runStart;
+  console.log();
   console.log(
     `Build complete: ${succeeded} succeeded, ${failed} failed in ${formatDuration(totalMs)}`
   );
 
-  // Set a non-zero exit code on any failure so CI/automation picks it up.
-  // We use exitCode rather than process.exit() so the event loop drains
-  // cleanly before exit — any pending logs flush, file handles close.
-  if (failed > 0) process.exitCode = 1;
+  // Soft error summary. Zero is the target — anything else is a bug
+  // to investigate (rate-limit leak, prompt drift, parser gap, etc.),
+  // not acceptable noise. Files still got built with surviving vectors,
+  // but those sections shipped with degraded retrieval surface.
+  const softTotal = softErrors.augment + softErrors.encode;
+  if (softTotal === 0) {
+    console.log("Soft errors: 0 ✓");
+  } else {
+    console.log(
+      `Soft errors: ${softTotal} total ` +
+      `(augment: ${softErrors.augment}, encode: ${softErrors.encode}) — ` +
+      `target is 0. Files built with degraded vectors on failed sections; ` +
+      `re-investigate the cause above.`
+    );
+  }
+
+  // Set exit code on any hard failure OR non-zero soft errors so CI
+  // catches both classes of problem. Soft errors mean we shipped
+  // degraded data; that's a bug, not a warning.
+  if (failed > 0 || softTotal > 0) process.exitCode = 1;
 };
 
-// Only run main() when this file is invoked directly (not when required
-// by another module, e.g. a test). Standard Node entry-point pattern.
 if (require.main === module) {
-  main();
+  main().catch((err) => {
+    // Unexpected setup-stage failure (couldn't read prompt, vectorize
+    // probe failed, etc.). Differs from per-file failures which are
+    // captured by Promise.allSettled.
+    console.error("Build failed (unrecoverable):", err.message);
+    process.exit(1);
+  });
 }

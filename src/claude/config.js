@@ -3,7 +3,8 @@
 require("dotenv").config();
 const Pricing = require("./Pricing");
 
-const apiKey = process.env.ANTHROPIC_API_KEY;
+// const apiKey = process.env.ANTHROPIC_API_KEY;
+const apiKey = process.env.NEREUS_ANTHROPIC_API_KEY;
 
 /**
  * @constant

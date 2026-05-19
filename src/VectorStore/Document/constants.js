@@ -7,8 +7,9 @@
  * a `.bin` file on disk and the in-memory shape of a {@link Document}.
  *
  * Build-time tuning constants (e.g. word-count thresholds for the
- * vectorization heuristic) live in `src/knowledgeBase/constants.js` since
- * they belong to the build pipeline, not the data structure.
+ * vectorization heuristic) live inline in
+ * `src/actions/generate/binary/extractSections.js` since they belong
+ * to the build pipeline, not the data structure.
  */
 
 /**

@@ -111,64 +111,50 @@ const buildMapFromFilePaths = (filePaths, contents) => {
 
 /**
  * Synchronously walk a directory recursively, collecting `.md`
- * file paths. Iterative DFS so deeply nested corpora don't blow
- * the call stack. Symlinks are not followed.
+ * file paths. Uses `fs.readdirSync` with `recursive: true` (Node
+ * 18.17+) — the runtime handles the tree walk for us.
+ *
+ * Symlinks are not followed (Node's recursive option mirrors the
+ * old DFS behavior here — `isFile()` returns false for symlinks,
+ * so they get filtered out naturally).
+ *
+ * The `parentPath || path || dir` fallback handles three Node
+ * versions: `parentPath` (20.12+), `path` (20.1–20.11, deprecated),
+ * and a final fallback to `dir` itself in case neither is set.
  *
  * @param {string} dir - Starting directory.
  * @returns {string[]} Absolute paths of every .md file found.
  */
 const walkMarkdownFilesSync = (dir) => {
-  const collected = [];
-  const stack = [dir];
-  while (stack.length) {
-    const current = stack.pop();
-    let entries;
-    try {
-      entries = fs.readdirSync(current, { withFileTypes: true });
-    } catch (err) {
-      throw new Error(`SectionResolver: cannot read directory "${current}": ${err.message}`);
-    }
-    for (const entry of entries) {
-      const fullPath = path.join(current, entry.name);
-      if (entry.isDirectory()) {
-        stack.push(fullPath);
-      } else if (entry.isFile() && entry.name.endsWith(".md")) {
-        collected.push(fullPath);
-      }
-      // symlinks, sockets, etc.: silently skipped
-    }
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { recursive: true, withFileTypes: true });
+  } catch (err) {
+    throw new Error(`SectionResolver: cannot read directory "${dir}": ${err.message}`);
   }
-  return collected;
+  return entries
+    .filter(e => e.isFile() && e.name.endsWith(".md"))
+    .map(e => path.join(e.parentPath || e.path || dir, e.name));
 };
 
 /**
  * Async sibling of {@link walkMarkdownFilesSync}. Uses
- * `fs.promises.readdir`. Behavior is otherwise identical.
+ * `fs.promises.readdir` with `recursive: true` (Node 20.1+).
+ * Behavior is otherwise identical.
  *
  * @param {string} dir
  * @returns {Promise<string[]>}
  */
 const walkMarkdownFilesAsync = async (dir) => {
-  const collected = [];
-  const stack = [dir];
-  while (stack.length) {
-    const current = stack.pop();
-    let entries;
-    try {
-      entries = await fsAsync.readdir(current, { withFileTypes: true });
-    } catch (err) {
-      throw new Error(`SectionResolver: cannot read directory "${current}": ${err.message}`);
-    }
-    for (const entry of entries) {
-      const fullPath = path.join(current, entry.name);
-      if (entry.isDirectory()) {
-        stack.push(fullPath);
-      } else if (entry.isFile() && entry.name.endsWith(".md")) {
-        collected.push(fullPath);
-      }
-    }
+  let entries;
+  try {
+    entries = await fsAsync.readdir(dir, { recursive: true, withFileTypes: true });
+  } catch (err) {
+    throw new Error(`SectionResolver: cannot read directory "${dir}": ${err.message}`);
   }
-  return collected;
+  return entries
+    .filter(e => e.isFile() && e.name.endsWith(".md"))
+    .map(e => path.join(e.parentPath || e.path || dir, e.name));
 };
 
 /**

@@ -6,8 +6,19 @@
 /**
  * @function parseResponseJson
  * @description
- * Parses the first complete JSON value from a raw LLM text string, handling
- * two common model output quirks.
+ * Parses the first complete JSON value from an LLM response, handling
+ * common model output quirks and accepting either a raw text string or
+ * a Response envelope from `src/claude/run.js`.
+ *
+ * **Input shapes accepted:**
+ *
+ * 1. **Plain string** — the raw text body of an LLM response.
+ *
+ * 2. **Response envelope** — an object with `.output.text` containing
+ *    the text body. This is what `src/claude/run.js` returns. We unwrap
+ *    to the text body and continue. Putting this fallback here keeps
+ *    callers from having to write `response?.output?.text ?? response`
+ *    at every site that wants JSON from a Claude response.
  *
  * **Model output quirks handled:**
  *
@@ -18,9 +29,20 @@
  *    after the JSON (e.g. `[] **Reasoning:** the section has no facts`). Only
  *    the first complete JSON value is extracted; trailing content is discarded.
  *
- * @param {string} text - Raw text string from a Claude API response.
+ * @param {string|object} text - Raw text string OR a Response envelope
+ *   with `.output.text`.
  * @returns {*} Parsed JSON value (object, array, etc.).
  * @throws {SyntaxError} If `JSON.parse` fails after extraction.
+ * @throws {TypeError}   If `input` is neither a string nor a Response-shaped
+ *   object with a `.output.text` string.
+ *
+ * @example <caption>Plain string</caption>
+ * parseResponseJson('{"key":"value"}');
+ * // → { key: "value" }
+ *
+ * @example <caption>Response envelope</caption>
+ * parseResponseJson({ output: { text: '[{"a":1}]' } });
+ * // → [{ a: 1 }]
  *
  * @example <caption>Strips fences</caption>
  * parseResponseJson('```json\n[{"a":1}]\n```');
@@ -29,12 +51,16 @@
  * @example <caption>Discards trailing commentary</caption>
  * parseResponseJson('[{"a":1}]\n\n**Reasoning:** ...');
  * // → [{ a: 1 }]
- *
- * @example <caption>Plain object</caption>
- * parseResponseJson('{"key":"value"}');
- * // → { key: "value" }
  */
 const parseResponseJson = text => {
+  text && typeof text === "object" && (text = text?.output?.text);
+  if (!text) return null;
+  if (typeof text !== "string") {
+    throw new TypeError(
+      "parseResponseJson: expected a string or a Response-shaped object with .output.text"
+    );
+  }
+
   // Strip markdown code fences the model sometimes wraps around JSON output.
   const stripped = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trimStart();
 
