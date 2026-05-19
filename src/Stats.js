@@ -105,6 +105,7 @@ class StatsItem {
 
     costFn && Object.defineProperty(this, "cost", { value: costFn });
 
+    // Object serializer.
     Object.defineProperty(this, "toString", {
       value: function() {
         const isBatch = this.succeeded !== undefined;
@@ -137,6 +138,26 @@ class StatsItem {
         str += "─────────────────────────────────────\n";
         return str;
       }
+    });
+
+    // Json serializer.
+    Object.defineProperty(this, "toJSON", {
+      value: function() {
+        const out = {
+          duration: this.duration,
+          inputTokens: this.inputTokens,
+          outputTokens: this.outputTokens,
+          cache: this.cache,
+        };
+        this.cacheHit            !== undefined && (out.cacheHit            = this.cacheHit);
+        this.cacheMiss           !== undefined && (out.cacheMiss           = this.cacheMiss);
+        this.cachedTokensRead    !== undefined && (out.cachedTokensRead    = this.cachedTokensRead);
+        this.cachedTokensCreated !== undefined && (out.cachedTokensCreated = this.cachedTokensCreated);
+        this.succeeded           !== undefined && (out.succeeded           = this.succeeded);
+        this.errored             !== undefined && (out.errored             = this.errored);
+        typeof this.cost === "function" && (out.cost = this.cost());
+        return out;
+      },
     });
   }
 }
