@@ -4,6 +4,7 @@ const load   = require("./load");
 const search = require("./search");
 const { ABSOLUTE_FLOOR } = require("./constants");
 const Document = require("./Document");
+const deriveDocumentId = require("../utilities/deriveDocumentId");
 
 /**
  * @file index.js
@@ -142,6 +143,89 @@ class VectorStore extends Array {
       throw new AggregateError(errors, `VectorStore.add: ${errors.length}/${inputPaths.length} paths failed`);
     }
     return this;
+  }
+
+  /**
+   * Remove documents from the store by documentId, in place.
+   * Variadic: accepts any combination of strings and (possibly
+   * nested) arrays of strings — same shape as {@link VectorStore#add}.
+   *
+   *   store.remove("theme|stem");
+   *   store.remove("theme|a", "theme|b");
+   *   store.remove(["theme|a", "theme|b"]);
+   *   store.remove([["theme|a"], ["theme|b", "theme|c"]]);
+   *
+   * Unknown documentIds are warned about but do NOT throw — matches
+   * Unix `rm` semantics where removing something already-gone is a
+   * no-op. The return value tells the caller how many entries were
+   * actually removed.
+   *
+   * Synchronous (no I/O) — mutating an in-memory array. Async only
+   * for symmetry-of-feel with {@link VectorStore#add} would be a
+   * lie; the operation genuinely doesn't need awaiting.
+   *
+   * @param {...(string|string[])} documentIds
+   * @returns {number} Count of documents actually removed.
+   *
+   * @example
+   *   const removed = store.remove("biocides|old_doc");
+   *   // → 1 if it existed, 0 if not
+   */
+  remove(...documentIds) {
+    documentIds = documentIds.flat(Infinity);
+    if (documentIds.length === 0) return 0;
+ 
+    // Validate up front so we don't half-remove if a later arg
+    // turns out to be the wrong type.
+    for (const id of documentIds) {
+      if (typeof id !== "string" || id.length === 0) {
+        throw new Error(`VectorStore.remove: each documentId must be a non-empty string, got ${typeof id}`);
+      }
+    }
+
+    // Map the input to correct documentIds, if needed.
+    let j = 0;
+    const unknown = new Set;
+    for (let i = 0, l = documentIds.length, originalInput, documentId; i !==l; ++i) {
+      try {
+        documentId = deriveDocumentId(originalInput = documentIds[i]);
+        documentIds[j++] = [documentId, { originalInput, cnt: 0 }];
+      } catch {
+        unknown.add(originalInput);
+      }
+    }
+    documentIds.length = j;
+ 
+    // Build a Map for O(1) membership checks and remove counts.
+    // A 50-deletion batch shouldn't scan the deletion list linearly per document.
+    const targets = new Map(documentIds);
+ 
+    // In place O(1) replacement and record what has been removed.
+    let kept = 0, l = this.length;
+    for (let i = 0, cur, val; i !== l; ++i) {
+      (val = targets.get((cur = this[i]).documentId)) === undefined && (
+        this[kept++] = cur
+      ) || (
+        ++val.cnt
+      );
+    }
+
+    const removed = l - (this.length = kept);
+ 
+    // Warn about anything we didn't find. We do this after the
+    // walk (rather than tracking found/not-found inline) so the
+    // warning order matches the input order, which makes debug
+    // logs easier to read.
+    if (removed < targets.size) {
+      targets.forEach(({ cnt, originalInput }, _) => (
+        // Only warn for ids that were targets AND aren't present
+        // anymore
+        cnt || console.warn(`VectorStore.remove: document "${originalInput}" not in store`)
+      ));
+    }
+    unknown.forEach(originalInput => console.warn(`VectorStore.remove: document "${originalInput}" not in store`));
+ 
+    return removed;
   }
 
   /**

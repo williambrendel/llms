@@ -8,13 +8,16 @@
  *   - Basic theme|stem derivation from various path shapes
  *   - Parent folder is the IMMEDIATE parent only (no full path)
  *   - Root-level files get the "root" theme
- *   - Build metadata (anything after first `|` in basename) is stripped
+ *   - Build metadata (`|md_<timestamp>` suffix) is stripped conservatively
+ *   - Non-timestamp `|` characters in the stem are preserved (sanitized to `_`)
+ *   - Pass-through: already-formed documentIds return unchanged (idempotent)
  *   - Extension stripping handles common cases
  *   - Sanitization: lowercase, diacritics, separator normalization, run collapse
  *   - Error conditions: empty input, nameless files
  */
 
 const deriveDocumentId = require("../../src/utilities/deriveDocumentId");
+const { isDocumentIdShape, METADATA_SUFFIX_RE } = deriveDocumentId;
 
 describe("deriveDocumentId — basic cases", () => {
   test("simple theme/file pair", () => {
@@ -53,23 +56,112 @@ describe("deriveDocumentId — root theme fallback", () => {
 });
 
 describe("deriveDocumentId — build metadata stripping", () => {
-  test("strips |md_<timestamp> suffix from basename", () => {
+  test("strips canonical |md_<timestamp> suffix from basename", () => {
     expect(deriveDocumentId("biology/causes_of_X|md_2026-04-22T02-28-30-099Z.bin"))
       .toBe("biology|causes_of_x");
   });
 
-  test("strips anything after first | even if not timestamp-shaped", () => {
-    expect(deriveDocumentId("biology/foo|v2|extra.bin")).toBe("biology|foo");
+  test("strips |md_<timestamp> even without file extension", () => {
+    expect(deriveDocumentId("biology/causes_of_x|md_2026-04-22T02-28-30-099Z"))
+      .toBe("biology|causes_of_x");
   });
 
-  test("strips | even from root-level files", () => {
-    expect(deriveDocumentId("foo|bar.bin")).toBe("root|foo");
+  test("strips |md_<timestamp> with .md extension", () => {
+    expect(deriveDocumentId("biology/overview|md_2026-04-22T02-28-30-099Z.md"))
+      .toBe("biology|overview");
+  });
+
+  test("preserves non-timestamp | (sanitizes to underscore)", () => {
+    // Old behavior split on the first | and threw away the rest.
+    // New behavior: only the canonical |md_<timestamp> suffix is
+    // metadata. Other |'s are just punctuation that sanitizeSegment
+    // converts to underscores.
+    expect(deriveDocumentId("biology/foo|v2|extra.bin")).toBe("biology|foo_v2_extra");
+  });
+
+  test("preserves | from root-level files (sanitizes to underscore)", () => {
+    expect(deriveDocumentId("foo|bar.bin")).toBe("root|foo_bar");
+  });
+
+  test("strips timestamp even when preceded by other |'s", () => {
+    // The regex is anchored at end-of-string — it matches only the
+    // LAST | when followed by a timestamp. Earlier |'s in the stem
+    // stay and get sanitized.
+    expect(deriveDocumentId("biology/doc|extra|md_2026-04-22T02-28-30-099Z.md"))
+      .toBe("biology|doc_extra");
+  });
+
+  test("does not strip partial timestamps (year only)", () => {
+    expect(deriveDocumentId("biology/doc|md_2026.md"))
+      .toBe("biology|doc_md_2026");
+  });
+
+  test("does strip |md_ alone", () => {
+    expect(deriveDocumentId("biology/doc|md_.md"))
+      .toBe("biology|doc_md");
+  });
+
+  test("does not strip non-md prefix even with timestamp shape", () => {
+    // The regex requires "|md_" specifically. "|other_<timestamp>" doesn't match.
+    expect(deriveDocumentId("biology/doc|x_2026-04-22T02-28-30-099Z.md"))
+      .toBe("biology|doc_x_2026_04_22t02_28_30_099z");
+  });
+
+  test("does not strip unmodified ISO timestamp", () => {
+    // Our timestamps replace : and . with -. An unmodified ISO
+    // doesn't match the regex.
+    expect(deriveDocumentId("biology/doc|md_2026-04-22T02:28:30.099Z.md"))
+      .toBe("biology|doc_md_2026_04_22t02_28_30_099z");
   });
 
   test("does not strip | from parent folder", () => {
     // Pipes in parent folder names sanitize to underscores like any other
     // non-alphanumeric character; they do not trigger build-metadata stripping.
     expect(deriveDocumentId("foo|bar/baz.md")).toBe("foo_bar|baz");
+  });
+});
+
+describe("deriveDocumentId — pass-through for already-formed IDs", () => {
+  test("simple theme|stem passes through unchanged", () => {
+    expect(deriveDocumentId("biology|overview")).toBe("biology|overview");
+  });
+
+  test("multi-word stem with underscores passes through", () => {
+    expect(deriveDocumentId("biology|causes_of_resistance"))
+      .toBe("biology|causes_of_resistance");
+  });
+
+  test("multi-word theme with underscores passes through", () => {
+    expect(deriveDocumentId("water_quality_and_chemistry|glossary"))
+      .toBe("water_quality_and_chemistry|glossary");
+  });
+
+  test("numeric segments pass through", () => {
+    expect(deriveDocumentId("v1|chapter2")).toBe("v1|chapter2");
+  });
+
+  test("uppercase is NOT a pass-through (falls through to derivation)", () => {
+    expect(deriveDocumentId("Biology|Overview")).toBe("root|biology_overview");
+  });
+
+  test("spaces are NOT a pass-through", () => {
+    expect(deriveDocumentId("biology|cooling towers"))
+      .toBe("root|biology_cooling_towers");
+  });
+
+  test("dashes are NOT a pass-through", () => {
+    expect(deriveDocumentId("biology|cooling-towers"))
+      .toBe("root|biology_cooling_towers");
+  });
+
+  test("path-shaped input is NOT a pass-through", () => {
+    expect(deriveDocumentId("biology/overview.md")).toBe("biology|overview");
+  });
+
+  test("three segments (extra |) is NOT a pass-through", () => {
+    // Treated as a basename — parent is ".", basename has multiple |'s.
+    // None of them match the timestamp pattern, so all sanitize.
+    expect(deriveDocumentId("biology|sub|overview")).toBe("root|biology_sub_overview");
   });
 });
 
@@ -134,13 +226,30 @@ describe("deriveDocumentId — sanitization", () => {
 });
 
 describe("deriveDocumentId — idempotence", () => {
-  test("running on output of derive does not change it", () => {
+  // True idempotence: f(f(x)) === f(x). Achieved via the pass-through
+  // for already-formed documentIds. Without it, derive(derive(x)) would
+  // mangle the output into "root|biology" (treating the previous output
+  // as a bare filename and dropping the post-| portion).
+  const paths = [
+    "biology/overview.md",
+    "chemistry/Cooling Towers.md",
+    "biology/causes_of_X|md_2026-04-22T02-28-30-099Z.bin",
+    "overview.md",
+    "water-quality-and-chemistry/terms_glossary_with_synonyms_v2.md",
+    "/abs/path/to/theme/file.md",
+    "biology/foo|v2|extra.bin",
+  ];
+
+  test.each(paths)("f(f(x)) === f(x) for %s", (input) => {
+    const once  = deriveDocumentId(input);
+    const twice = deriveDocumentId(once);
+    expect(twice).toBe(once);
+  });
+
+  test("explicit example: passing a derived id back gets the same id", () => {
     const id = deriveDocumentId("biology/overview.md");
-    expect(deriveDocumentId(id)).toBe("root|biology");
-    // Note: it's not idempotent in the strict sense — derive(derive(x)) treats
-    // the previous output as a flat filename and prefixes "root|". The
-    // important invariant is that the OUTPUT FORMAT is stable (theme|stem
-    // shape, lowercase, single-char separator).
+    expect(id).toBe("biology|overview");
+    expect(deriveDocumentId(id)).toBe("biology|overview");
   });
 });
 
@@ -227,5 +336,73 @@ describe("deriveDocumentId — module export conventions", () => {
 
   test("the exported function is frozen", () => {
     expect(Object.isFrozen(deriveDocumentId)).toBe(true);
+  });
+
+  test("exposes isDocumentIdShape helper", () => {
+    expect(typeof deriveDocumentId.isDocumentIdShape).toBe("function");
+  });
+
+  test("exposes METADATA_SUFFIX_RE constant", () => {
+    expect(deriveDocumentId.METADATA_SUFFIX_RE).toBeInstanceOf(RegExp);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// isDocumentIdShape — direct predicate tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("isDocumentIdShape", () => {
+  test("accepts canonical theme|stem", () => {
+    expect(isDocumentIdShape("biology|overview")).toBe(true);
+    expect(isDocumentIdShape("water_quality_and_chemistry|glossary_v2")).toBe(true);
+  });
+
+  test("rejects path-like inputs", () => {
+    expect(isDocumentIdShape("biology/overview.md")).toBe(false);
+    expect(isDocumentIdShape("biology\\overview.md")).toBe(false);
+  });
+
+  test("rejects inputs with extensions", () => {
+    expect(isDocumentIdShape("biology|overview.md")).toBe(false);
+  });
+
+  test("rejects uppercase / spaces / dashes", () => {
+    expect(isDocumentIdShape("Biology|Overview")).toBe(false);
+    expect(isDocumentIdShape("biology|cooling towers")).toBe(false);
+    expect(isDocumentIdShape("biology|cooling-towers")).toBe(false);
+  });
+
+  test("rejects wrong number of segments", () => {
+    expect(isDocumentIdShape("biology")).toBe(false);
+    expect(isDocumentIdShape("biology|sub|overview")).toBe(false);
+  });
+
+  test("rejects empty halves", () => {
+    expect(isDocumentIdShape("|overview")).toBe(false);
+    expect(isDocumentIdShape("biology|")).toBe(false);
+    expect(isDocumentIdShape("|")).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// METADATA_SUFFIX_RE — direct regex tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("METADATA_SUFFIX_RE", () => {
+  test("matches the canonical timestamp suffix", () => {
+    expect("|md_2026-04-22T02-28-30-099Z").toMatch(METADATA_SUFFIX_RE);
+  });
+
+  test("matches at end of string only", () => {
+    expect("doc|md_2026-04-22T02-28-30-099Z".match(METADATA_SUFFIX_RE)?.[0])
+      .toBe("|md_2026-04-22T02-28-30-099Z");
+  });
+
+  test("does NOT match in the middle of a string", () => {
+    expect("|md_2026-04-22T02-28-30-099Zextra").not.toMatch(METADATA_SUFFIX_RE);
+  });
+
+  test("does NOT match without the leading |", () => {
+    expect("md_2026-04-22T02-28-30-099Z").not.toMatch(METADATA_SUFFIX_RE);
   });
 });

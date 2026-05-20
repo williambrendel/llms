@@ -11,15 +11,6 @@ const SectionResolver = require("../../../src/actions/query/SectionResolver");
 // Test fixtures
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Spin up a fresh temp directory with a known layout:
- *
- *   <tmpdir>/biocides/water_chemistry.md
- *   <tmpdir>/biocides/causes_of_resistance.md
- *   <tmpdir>/operations/inspection.md
- *
- * Three documents, two themes, enough to exercise recursion + IDs.
- */
 const makeCorpus = async () => {
   const root = await fsAsync.mkdtemp(path.join(os.tmpdir(), "section-resolver-test-"));
 
@@ -45,14 +36,9 @@ const cleanup = async (root) => {
   await fsAsync.rm(root, { recursive: true, force: true });
 };
 
-// Construction adapters used by `describe.each` — both paths are
-// exercised with the same assertions.
 const SYNC_PATH  = { name: "constructor",       build: (input) => new SectionResolver(input) };
 const ASYNC_PATH = { name: "static create()",   build: (input) => SectionResolver.create(input) };
 
-// Helper: normalize both adapter returns to a Promise so `await`
-// works uniformly. The sync constructor returns the instance directly;
-// `create` returns a Promise. Either way, `await` gives us the instance.
 const construct = async ({ build }, input) => build(input);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -99,7 +85,6 @@ describe.each([SYNC_PATH, ASYNC_PATH])("SectionResolver — $name — directory 
       await fsAsync.writeFile(deepPath, "deep content", "utf8");
 
       const resolver = await construct(adapter, root);
-      // The IMMEDIATE parent folder ("c") becomes the theme.
       expect(resolver.documentIds).toContain("c|leaf");
       expect(resolver.size).toBe(1);
     } finally {
@@ -161,9 +146,6 @@ describe.each([SYNC_PATH, ASYNC_PATH])("SectionResolver — $name — single-fil
   });
 
   test("accepts a single non-.md file (caller named it explicitly)", async () => {
-    // Single-file input bypasses the .md filter — the caller picked
-    // this specific file, so we honor the choice. Only directory
-    // walks filter by extension.
     const root = await fsAsync.mkdtemp(path.join(os.tmpdir(), "section-resolver-single-txt-"));
     try {
       const filePath = path.join(root, "theme", "solo.txt");
@@ -193,9 +175,6 @@ describe.each([SYNC_PATH, ASYNC_PATH])("SectionResolver — $name — single-fil
 });
 
 describe.each([SYNC_PATH, ASYNC_PATH])("SectionResolver — $name — input validation", (adapter) => {
-  // Both paths reject the same invalid inputs with the same message.
-  // Sync throws immediately; async rejects.
-
   const invalidInputs = [
     [null,        "null"],
     [undefined,   "undefined"],
@@ -216,13 +195,13 @@ describe.each([SYNC_PATH, ASYNC_PATH])("SectionResolver — $name — input vali
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// resolve() — same behavior regardless of construction path; tested once
+// resolve()
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("SectionResolver.resolve", () => {
   let root;
   let resolver;
-  const TEST_CONTENT = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"; // 26 chars
+  const TEST_CONTENT = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
   const TEST_DOC_ID = "section_resolver_resolve_test|doc";
 
   beforeAll(async () => {
@@ -294,29 +273,136 @@ describe("SectionResolver.resolve", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Collision detection — happens in the shared buildMapFromFilepaths helper
+// getPath()
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe.each([SYNC_PATH, ASYNC_PATH])("SectionResolver — $name — getPath", (adapter) => {
+  test("returns null for unknown documentId", async () => {
+    const resolver = await construct(adapter, new Map([["t|doc", "x"]]));
+    expect(resolver.getPath("does|not_exist")).toBeNull();
+  });
+
+  test("returns null for entries ingested via raw Map", async () => {
+    const resolver = await construct(adapter, new Map([["t|doc", "x"]]));
+    expect(resolver.resolve("t|doc", [0, 1])).toBe("x");
+    expect(resolver.getPath("t|doc")).toBeNull();
+  });
+
+  test("returns absolute path for a single-file input", async () => {
+    const root = await fsAsync.mkdtemp(path.join(os.tmpdir(), "section-resolver-getpath-file-"));
+    try {
+      const filePath = path.join(root, "theme", "doc.md");
+      await fsAsync.mkdir(path.dirname(filePath), { recursive: true });
+      await fsAsync.writeFile(filePath, "content", "utf8");
+
+      const resolver = await construct(adapter, filePath);
+      const got = resolver.getPath("theme|doc");
+
+      expect(got).toBe(filePath);
+      expect(path.isAbsolute(got)).toBe(true);
+    } finally {
+      await cleanup(root);
+    }
+  });
+
+  test("returns absolute paths for every file found in a directory walk", async () => {
+    const { root } = await makeCorpus();
+    try {
+      const resolver = await construct(adapter, root);
+
+      for (const id of resolver.documentIds) {
+        const got = resolver.getPath(id);
+        expect(typeof got).toBe("string");
+        expect(path.isAbsolute(got)).toBe(true);
+        expect(fs.existsSync(got)).toBe(true);
+      }
+
+      expect(resolver.getPath("biocides|water_chemistry"))
+        .toBe(path.join(root, "biocides", "water_chemistry.md"));
+    } finally {
+      await cleanup(root);
+    }
+  });
+});
+
+describe("SectionResolver.getPath — after add()", () => {
+  test("records paths for newly-added file inputs", async () => {
+    const root = await fsAsync.mkdtemp(path.join(os.tmpdir(), "section-resolver-getpath-add-file-"));
+    try {
+      const filePath = path.join(root, "biocides", "new.md");
+      await fsAsync.mkdir(path.dirname(filePath), { recursive: true });
+      await fsAsync.writeFile(filePath, "added content", "utf8");
+
+      const r = new SectionResolver(new Map());
+      expect(r.getPath("biocides|new")).toBeNull();
+
+      await r.add(filePath);
+
+      expect(r.getPath("biocides|new")).toBe(filePath);
+      expect(r.resolve("biocides|new", [0, 5])).toBe("added");
+    } finally {
+      await cleanup(root);
+    }
+  });
+
+  test("records paths for every file added via a directory input", async () => {
+    const root = await fsAsync.mkdtemp(path.join(os.tmpdir(), "section-resolver-getpath-add-dir-"));
+    try {
+      const writeMd = async (relPath, content) => {
+        const full = path.join(root, relPath);
+        await fsAsync.mkdir(path.dirname(full), { recursive: true });
+        await fsAsync.writeFile(full, content, "utf8");
+        return full;
+      };
+      const a = await writeMd("biocides/a.md", "alpha");
+      const b = await writeMd("biocides/b.md", "beta");
+
+      const r = new SectionResolver(new Map());
+      await r.add(root);
+
+      expect(r.getPath("biocides|a")).toBe(a);
+      expect(r.getPath("biocides|b")).toBe(b);
+    } finally {
+      await cleanup(root);
+    }
+  });
+
+  test("does not record paths for entries added via Map", async () => {
+    const r = new SectionResolver(new Map());
+    await r.add(new Map([["t|map_only", "no-path-here"]]));
+
+    expect(r.resolve("t|map_only", [0, 2])).toBe("no");
+    expect(r.getPath("t|map_only")).toBeNull();
+  });
+
+  test("mixed add records paths only for path-input entries", async () => {
+    const root = await fsAsync.mkdtemp(path.join(os.tmpdir(), "section-resolver-getpath-add-mix-"));
+    try {
+      const filePath = path.join(root, "t", "file.md");
+      await fsAsync.mkdir(path.dirname(filePath), { recursive: true });
+      await fsAsync.writeFile(filePath, "from-file", "utf8");
+
+      const r = new SectionResolver(new Map());
+      await r.add(
+        new Map([["from|map", "map-content"]]),
+        filePath,
+      );
+
+      expect(r.getPath("from|map")).toBeNull();
+      expect(r.getPath("t|file")).toBe(filePath);
+    } finally {
+      await cleanup(root);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Collision detection
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe.each([SYNC_PATH, ASYNC_PATH])("SectionResolver — $name — documentId collision", (adapter) => {
-  // Forcing a collision requires two files that derive to the same
-  // documentId. deriveDocumentId produces "theme|stem" — same theme
-  // + same stem = collision. Hardest to engineer in a real directory
-  // without renaming, but a flat layout with two same-name files in
-  // different subdirectories DOESN'T collide (the theme differs).
-  //
-  // The actual collision case is two files in the SAME directory
-  // with stems that sanitize identically. Skipping this test if
-  // we can't easily force a collision in deriveDocumentId — the
-  // shared helper is exercised in other ways.
-
   test("error thrown when two files derive to the same documentId", async () => {
-    // We rely on deriveDocumentId producing the same id for files
-    // whose paths differ only in characters it sanitizes away. The
-    // implementation strips/normalizes certain characters; a precise
-    // test depends on exact sanitization rules. Skip if we can't
-    // reliably trigger a collision.
-    // (Behavior is verified indirectly: buildMapFromFilepaths is
-    // covered by Map-input tests for everything else.)
+    // Behavior verified indirectly via Map-input tests.
   });
 });
 
@@ -354,11 +440,14 @@ describe("SectionResolver — module export", () => {
 
   test("instance methods exist on prototype", () => {
     expect(typeof SectionResolver.prototype.resolve).toBe("function");
+    expect(typeof SectionResolver.prototype.getPath).toBe("function");
+    expect(typeof SectionResolver.prototype.add).toBe("function");
+    expect(typeof SectionResolver.prototype.remove).toBe("function");
   });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// add() — variadic in-place ingestion
+// add()
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("SectionResolver.add — single input modes", () => {
@@ -533,7 +622,6 @@ describe("SectionResolver.add — collision detection", () => {
     await expect(r.add(new Map([["t|doc", "new"]])))
       .rejects.toThrow(/collision with existing index.+t\|doc/);
 
-    // Index unchanged.
     expect(r.size).toBe(1);
     expect(r.resolve("t|doc", [0, 3])).toBe("old");
   });
@@ -583,7 +671,6 @@ describe("SectionResolver.add — read failures", () => {
 
       expect(err).toBeInstanceOf(AggregateError);
       expect(err.errors.length).toBeGreaterThanOrEqual(1);
-      // Index untouched — even the readable file did NOT land.
       expect(r.size).toBe(0);
     } finally {
       await cleanup(root);
@@ -607,5 +694,252 @@ describe("SectionResolver.add — return value", () => {
     ]));
     expect(added).toBe(2);
     expect(r.size).toBe(3);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// remove()
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("SectionResolver.remove — single input modes", () => {
+  const makeMapResolver = (entries) => new SectionResolver(new Map(Object.entries(entries)));
+
+  test("removes a single documentId", () => {
+    const r = makeMapResolver({ "t|a": "A", "t|b": "B", "t|c": "C" });
+    const removed = r.remove("t|b");
+    expect(removed).toBe(1);
+    expect(r.size).toBe(2);
+    expect(r.documentIds.sort()).toEqual(["t|a", "t|c"]);
+  });
+
+  test("removes multiple documentIds as separate args", () => {
+    const r = makeMapResolver({ "t|a": "A", "t|b": "B", "t|c": "C", "t|d": "D" });
+    expect(r.remove("t|a", "t|c")).toBe(2);
+    expect(r.documentIds.sort()).toEqual(["t|b", "t|d"]);
+  });
+
+  test("accepts an array of documentIds", () => {
+    const r = makeMapResolver({ "t|a": "A", "t|b": "B", "t|c": "C" });
+    expect(r.remove(["t|a", "t|b"])).toBe(2);
+    expect(r.documentIds).toEqual(["t|c"]);
+  });
+
+  test("flat(Infinity) unrolls nested arrays", () => {
+    const r = makeMapResolver({ "t|a": "A", "t|b": "B", "t|c": "C", "t|d": "D" });
+    expect(r.remove([["t|a"], ["t|b", "t|c"]])).toBe(3);
+    expect(r.documentIds).toEqual(["t|d"]);
+  });
+
+  test("empty input returns 0 with no warnings", () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const r = makeMapResolver({ "t|a": "A" });
+      expect(r.remove()).toBe(0);
+      expect(r.remove([])).toBe(0);
+      expect(r.size).toBe(1);
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("resolve returns null after remove", () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const r = makeMapResolver({ "t|a": "Hello, world" });
+      r.remove("t|a");
+      expect(r.resolve("t|a", [0, 5])).toBeNull();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/unknown documentId.+t\|a/));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});
+
+describe("SectionResolver.remove — path inputs are normalized", () => {
+  // Inputs route through deriveDocumentId, so paths AND already-formed
+  // ids both work.
+
+  const makeMapResolver = (entries) => new SectionResolver(new Map(Object.entries(entries)));
+
+  test("accepts a file path (derives to documentId)", () => {
+    const r = makeMapResolver({ "biology|overview": "content" });
+    const removed = r.remove("biology/overview.md");
+    expect(removed).toBe(1);
+    expect(r.size).toBe(0);
+  });
+
+  test("accepts a full filesystem path", () => {
+    const r = makeMapResolver({ "biology|overview": "content" });
+    const removed = r.remove("/abs/path/to/biology/overview.md");
+    expect(removed).toBe(1);
+  });
+
+  test("accepts a path with timestamp suffix", () => {
+    const r = makeMapResolver({ "biology|overview": "content" });
+    const removed = r.remove("biology/overview|md_2026-04-22T02-28-30-099Z.md");
+    expect(removed).toBe(1);
+  });
+
+  test("mixing path and id inputs dedups by derived id", () => {
+    // Both inputs derive to "biology|overview" — the Map collapses
+    // them. One target, one matching entry, one removal.
+    const r = makeMapResolver({ "biology|overview": "content" });
+    const removed = r.remove("biology|overview", "biology/overview.md");
+    expect(removed).toBe(1);
+  });
+});
+
+describe("SectionResolver.remove — cleans both content and paths maps", () => {
+  let root;
+  let r;
+
+  beforeEach(async () => {
+    root = await fsAsync.mkdtemp(path.join(os.tmpdir(), "section-resolver-remove-paths-"));
+    const writeMd = async (relPath, content) => {
+      const full = path.join(root, relPath);
+      await fsAsync.mkdir(path.dirname(full), { recursive: true });
+      await fsAsync.writeFile(full, content, "utf8");
+      return full;
+    };
+    await writeMd("t/a.md", "alpha");
+    await writeMd("t/b.md", "beta");
+    await writeMd("t/c.md", "gamma");
+
+    r = await SectionResolver.create(root);
+  });
+
+  afterEach(async () => {
+    await cleanup(root);
+  });
+
+  test("remove drops the documentId from BOTH content and paths maps", () => {
+    expect(r.getPath("t|a")).toMatch(/t\/a\.md$/);
+
+    const removed = r.remove("t|a");
+    expect(removed).toBe(1);
+
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(r.resolve("t|a", [0, 5])).toBeNull();
+    } finally {
+      warnSpy.mockRestore();
+    }
+    expect(r.getPath("t|a")).toBeNull();
+  });
+
+  test("surviving entries retain BOTH content and path", () => {
+    r.remove("t|a");
+    expect(r.resolve("t|b", [0, 4])).toBe("beta");
+    expect(r.getPath("t|b")).toMatch(/t\/b\.md$/);
+  });
+});
+
+describe("SectionResolver.remove — unknown documentIds", () => {
+  let warnSpy;
+  beforeEach(() => { warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {}); });
+  afterEach(()  => { warnSpy.mockRestore(); });
+
+  const makeMapResolver = (entries) => new SectionResolver(new Map(Object.entries(entries)));
+
+  test("warn-and-continue on unknown id", () => {
+    const r = makeMapResolver({ "t|a": "A", "t|b": "B" });
+    const removed = r.remove("t|a", "missing|x");
+    expect(removed).toBe(1);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(`"missing|x"`));
+  });
+
+  test("warning uses the ORIGINAL input string, not the derived id", () => {
+    // A user-typed path should appear verbatim in the warning,
+    // not as the derived "theme|stem" form.
+    const r = makeMapResolver({});
+
+    r.remove("missing/path.md");
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(`"missing/path.md"`));
+  });
+
+  test("removing only unknown ids returns 0, index untouched", () => {
+    const r = makeMapResolver({ "t|a": "A", "t|b": "B" });
+    expect(r.remove("missing1|x", "missing2|x")).toBe(0);
+    expect(r.size).toBe(2);
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+  });
+
+  test("duplicate unknown ids in one call warn only once", () => {
+    const r = makeMapResolver({});
+    r.remove("missing|x", "missing|x", "missing|x");
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("removing same known id twice — removes once, no warning", () => {
+    const r = makeMapResolver({ "t|a": "A" });
+    const removed = r.remove("t|a", "t|a");
+    expect(removed).toBe(1);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("SectionResolver.remove — garbage inputs don't throw", () => {
+  let warnSpy;
+  beforeEach(() => { warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {}); });
+  afterEach(()  => { warnSpy.mockRestore(); });
+
+  const makeMapResolver = (entries) => new SectionResolver(new Map(Object.entries(entries)));
+
+  test("derive-throwing input is treated as unknown, not fatal", () => {
+    // "!!!" sanitizes to empty stem → deriveDocumentId throws.
+    // remove() catches and adds it to the unknown set.
+    const r = makeMapResolver({ "t|a": "A" });
+
+    expect(() => r.remove("!!!", "t|a")).not.toThrow();
+    // Valid id still removed.
+    expect(r.size).toBe(0);
+    // Garbage input warned.
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(`"!!!"`));
+  });
+
+  test("multiple derive-throwing inputs all warn, none fatal", () => {
+    const r = makeMapResolver({});
+
+    expect(() => r.remove("!!!", "???", "***")).not.toThrow();
+    expect(warnSpy).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("SectionResolver.remove — validation", () => {
+  const makeMapResolver = (entries) => new SectionResolver(new Map(Object.entries(entries)));
+
+  test("throws on non-string id", () => {
+    const r = makeMapResolver({ "t|a": "A" });
+    expect(() => r.remove(42)).toThrow(/must be a non-empty string/);
+    expect(r.size).toBe(1);
+  });
+
+  test("throws on empty string id", () => {
+    const r = makeMapResolver({ "t|a": "A" });
+    expect(() => r.remove("")).toThrow(/must be a non-empty string/);
+  });
+
+  test("validates ALL ids before mutating (no partial removal)", () => {
+    const r = makeMapResolver({ "t|a": "A", "t|b": "B" });
+    expect(() => r.remove("t|a", 42)).toThrow(/must be a non-empty string/);
+    expect(r.size).toBe(2);
+  });
+});
+
+describe("SectionResolver.remove — interaction with add()", () => {
+  test("removed id can be re-added", async () => {
+    const r = new SectionResolver(new Map([["t|a", "first"]]));
+    r.remove("t|a");
+    await r.add(new Map([["t|a", "second"]]));
+    expect(r.resolve("t|a", [0, 6])).toBe("second");
+  });
+
+  test("removing one id doesn't disturb others added by add()", async () => {
+    const r = new SectionResolver(new Map());
+    await r.add(new Map([["t|a", "A"], ["t|b", "B"]]));
+    r.remove("t|a");
+    expect(r.size).toBe(1);
+    expect(r.resolve("t|b", [0, 1])).toBe("B");
   });
 });

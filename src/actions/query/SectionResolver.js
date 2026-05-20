@@ -34,16 +34,21 @@ const deriveDocumentId = require("../../utilities/deriveDocumentId");
  *
  *   - **`Map<documentId, content>`:** pre-built map, no I/O. Used by
  *     tests and by `create` after it has done its own async reads.
+ *     **Note:** Map-input resolvers don't carry filesystem paths, so
+ *     `getPath(documentId)` returns `null` for entries that came in
+ *     this way. Mix Map and path inputs via `add()` and only the
+ *     path-input entries will have paths registered.
  *   - **Directory path (string):** recursively walks the directory,
- *     reads every `.md` file, derives a documentId per file.
+ *     reads every `.md` file, derives a documentId per file. Records
+ *     the absolute path alongside the content.
  *   - **File path (string):** reads a single file regardless of
  *     extension (caller has named it explicitly). Builds a one-entry
- *     map.
+ *     map and records its absolute path.
  *
  * Behavior — outputs, errors, warnings — is identical across both
  * paths. The only difference is whether the I/O blocks the caller.
  *
- * ## Document IDs
+ * ## Document IDs and paths
  *
  * IDs come from {@link deriveDocumentId} applied to each file's path,
  * which produces `"theme|stem"` form. The theme prefix is the
@@ -51,6 +56,12 @@ const deriveDocumentId = require("../../utilities/deriveDocumentId");
  * else in the pipeline (search hits, VectorStore documents) so the
  * IDs registered here line up exactly with what `resolve()` is
  * asked to find.
+ *
+ * Alongside `documentId → content`, the resolver also tracks
+ * `documentId → absolutePath` for documents ingested from the
+ * filesystem. The {@link SectionResolver#getPath} accessor exposes
+ * this mapping for downstream code (e.g. document endpoints that
+ * need to read the file from a documentId).
  *
  * Two files that sanitize to the same documentId is a setup bug:
  * the VectorStore can't distinguish them either. Construction
@@ -76,27 +87,30 @@ const deriveDocumentId = require("../../utilities/deriveDocumentId");
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Build the documentId → content map from parallel arrays of file
- * paths and their already-read contents.
+ * Build the documentId → content and documentId → absolute-path
+ * maps from parallel arrays of file paths and their already-read
+ * contents.
  *
  * This is the post-read initialization step shared by both
  * construction paths. The sync and async readers (`readPathSync`,
  * `readPathAsync`) are the only diverging code — once a path has
  * been resolved into `{filePaths, contents}` arrays, the rest is
  * the same regardless of I/O style. Centralizing the derivation
- * here means collision detection has exactly one implementation.
+ * here means collision detection has exactly one implementation,
+ * and the content/path maps stay in lockstep by construction.
  *
  * @param {string[]} filePaths - Absolute paths in deterministic order.
  * @param {string[]} contents  - Parallel array of file contents (same length, same order).
- * @returns {Map<string, string>} documentId → content
+ * @returns {{contentMap: Map<string, string>, pathMap: Map<string, string>}}
  * @throws {Error} On documentId collision — indicates a structurally
  *   ambiguous corpus that the VectorStore can't reliably distinguish.
  */
-const buildMapFromFilePaths = (filePaths, contents) => {
-  const map = new Map();
+const buildMapsFromFilePaths = (filePaths, contents) => {
+  const contentMap = new Map();
+  const pathMap = new Map();
   for (let i = 0; i < filePaths.length; i++) {
     const id = deriveDocumentId(filePaths[i]);
-    if (map.has(id)) {
+    if (contentMap.has(id)) {
       throw new Error(
         `SectionResolver: documentId "${id}" collision between ` +
         `"${filePaths[i]}" and previously-indexed file. This indicates ` +
@@ -104,9 +118,10 @@ const buildMapFromFilePaths = (filePaths, contents) => {
         `the directory layout or rename one of the files.`
       );
     }
-    map.set(id, contents[i]);
+    contentMap.set(id, contents[i]);
+    pathMap.set(id, filePaths[i]);
   }
-  return map;
+  return { contentMap, pathMap };
 };
 
 /**
@@ -159,7 +174,7 @@ const walkMarkdownFilesAsync = async (dir) => {
 
 /**
  * Read a path string synchronously, returning the file paths and
- * contents needed by {@link buildMapFromFilePaths}.
+ * contents needed by {@link buildMapsFromFilePaths}.
  *
  * Dispatches on whether the input is a directory (recursive walk,
  * `.md` filter) or a single file (just that one file, any extension
@@ -231,7 +246,9 @@ const readPathAsync = async (inputPath) => {
  * @class SectionResolver
  *
  * In-memory map from documentId to source-file content, plus a
- * range-checking lookup method. The `#map` private field is the
+ * sibling map from documentId to absolute filesystem path for
+ * entries ingested from the filesystem, plus a range-checking
+ * lookup method. The `#map` and `#paths` private fields are the
  * only state; lookups are O(1) map access plus a string slice.
  */
 class SectionResolver {
@@ -239,14 +256,23 @@ class SectionResolver {
   #map;
 
   /**
+   * @private The sibling documentId → absolutePath map. Populated
+   * only for entries ingested via path strings; entries that came
+   * in via a raw Map have no path registered.
+   */
+  #paths;
+
+  /**
    * Construct a SectionResolver synchronously.
    *
    * Accepts:
-   *   - `Map<documentId, content>`: stored directly. No I/O.
+   *   - `Map<documentId, content>`: stored directly. No I/O. No
+   *     paths registered.
    *   - Directory path (string): recursively walks the directory,
-   *     reads `.md` files via `fs.readFileSync`, builds the map.
+   *     reads `.md` files via `fs.readFileSync`, builds both the
+   *     content map and the path map.
    *   - File path (string): reads that one file (any extension),
-   *     builds a one-entry map.
+   *     builds a one-entry content map and registers its path.
    *
    * For the path inputs, this performs synchronous disk I/O. Use
    * {@link SectionResolver.create} for the non-blocking equivalent.
@@ -260,11 +286,14 @@ class SectionResolver {
   constructor(input) {
     if (input instanceof Map) {
       this.#map = input;
+      this.#paths = new Map();
       return;
     }
     if (typeof input === "string" && input.length > 0) {
       const { filePaths, contents } = readPathSync(input);
-      this.#map = buildMapFromFilePaths(filePaths, contents);
+      const { contentMap, pathMap } = buildMapsFromFilePaths(filePaths, contents);
+      this.#map = contentMap;
+      this.#paths = pathMap;
       return;
     }
     throw new Error(
@@ -290,6 +319,9 @@ class SectionResolver {
    *     "biocides_and_chemical_treatment|water_chemistry",
    *     [3331, 3631]
    *   );
+   *   const filePath = resolver.getPath(
+   *     "biocides_and_chemical_treatment|water_chemistry"
+   *   );
    */
   static async create(input) {
     if (input instanceof Map) {
@@ -297,12 +329,36 @@ class SectionResolver {
     }
     if (typeof input === "string" && input.length > 0) {
       const { filePaths, contents } = await readPathAsync(input);
-      const map = buildMapFromFilePaths(filePaths, contents);
-      return new SectionResolver(map);  // constructor takes the Map fast path
+      const { contentMap, pathMap } = buildMapsFromFilePaths(filePaths, contents);
+      // Use the Map fast path then patch the #paths field. We can't
+      // pass two arguments to the constructor without changing its
+      // public surface, so instantiate-then-set keeps the contract.
+      const instance = new SectionResolver(contentMap);
+      // Direct private-field access via a small bridge: the
+      // constructor already initialized #paths to empty, but we
+      // want the freshly-built pathMap. Use add-style mutation.
+      for (const [id, p] of pathMap) instance._setPath(id, p);
+      return instance;
     }
     throw new Error(
       "SectionResolver: input must be a Map<documentId, content> or a path string"
     );
+  }
+
+  /**
+   * @private
+   * Internal helper for `create` to populate the path map after
+   * the constructor's Map-input fast path. Not part of the public
+   * surface — keeping it as a method (rather than exposing the
+   * private field) lets V8 fully optimize private-field access in
+   * the hot path while still letting `create` complete the
+   * initialization symmetrically.
+   *
+   * @param {string} documentId
+   * @param {string} absolutePath
+   */
+  _setPath(documentId, absolutePath) {
+    this.#paths.set(documentId, absolutePath);
   }
 
   /**
@@ -350,6 +406,29 @@ class SectionResolver {
   }
 
   /**
+   * Look up the absolute filesystem path for a documentId. Returns
+   * `null` when:
+   *
+   *   - The documentId is unknown to this resolver.
+   *   - The documentId is known but was ingested via a raw Map and
+   *     therefore has no associated filesystem path.
+   *
+   * Callers that need to distinguish "unknown documentId" from
+   * "known but pathless" can cross-reference with `documentIds`.
+   *
+   * @param {string} documentId
+   * @returns {string|null} Absolute path, or null if absent.
+   *
+   * @example
+   *   const resolver = await SectionResolver.create("data/markdowns");
+   *   const p = resolver.getPath("biocides|water_chemistry");
+   *   // → "/abs/path/to/data/markdowns/biocides/water_chemistry.md"
+   */
+  getPath(documentId) {
+    return this.#paths.get(documentId) || null;
+  }
+
+  /**
    * Ingest one or more new documents into the existing index, in
    * place. Variadic: accepts any combination of strings, Maps, and
    * (possibly nested) arrays thereof. Arguments are flattened via
@@ -366,8 +445,11 @@ class SectionResolver {
    *
    * Each argument may be:
    *   - A `Map<documentId, content>`: merged directly. No I/O.
-   *   - A file path (string, any extension): read once.
-   *   - A directory path (string): recursively walked for `.md` files.
+   *     **No paths registered** for these entries.
+   *   - A file path (string, any extension): read once. Path
+   *     registered alongside the content.
+   *   - A directory path (string): recursively walked for `.md`
+   *     files. Paths registered for every file found.
    *
    * Collision policy applies across the union of all incoming
    * inputs: if any documentId — whether from the existing index, an
@@ -403,11 +485,16 @@ class SectionResolver {
     // strings get fully read. allSettled so one bad path doesn't
     // abort the rest — but we won't COMMIT anything if any failed,
     // since the index has all-or-nothing semantics.
+    //
+    // Each settled value is `{contentMap, pathMap}`: pathMap is
+    // empty for Map inputs, populated for path-string inputs.
     const settled = await Promise.allSettled(inputs.map(async (input) => {
-      if (input instanceof Map) return input;
+      if (input instanceof Map) {
+        return { contentMap: input, pathMap: new Map() };
+      }
       if (typeof input === "string" && input.length > 0) {
         const { filePaths, contents } = await readPathAsync(input);
-        return buildMapFromFilePaths(filePaths, contents);
+        return buildMapsFromFilePaths(filePaths, contents);
       }
       throw new Error(
         "SectionResolver.add: each input must be a Map<documentId, content> or a path string"
@@ -426,24 +513,31 @@ class SectionResolver {
       throw new AggregateError(readErrors, `SectionResolver.add: ${readErrors.length}/${inputs.length} inputs failed to read`);
     }
 
-    // Stage everything into one Map. Detect collisions both within
-    // the incoming set and against the existing index BEFORE
-    // mutating. This is the "all-or-nothing" guarantee — a partial
-    // index would be ambiguous.
-    const merged = new Map();
-    for (const incoming of settled.map(r => r.value)) {
-      for (const [documentId, content] of incoming) {
-        if (merged.has(documentId)) {
+    // Stage everything into one content map + one path map. Detect
+    // collisions both within the incoming set and against the
+    // existing index BEFORE mutating. This is the "all-or-nothing"
+    // guarantee — a partial index would be ambiguous.
+    const mergedContent = new Map();
+    const mergedPaths = new Map();
+    for (const { contentMap, pathMap } of settled.map(r => r.value)) {
+      for (const [documentId, content] of contentMap) {
+        if (mergedContent.has(documentId)) {
           throw new Error(
             `SectionResolver.add: documentId collision within this call — "${documentId}" appears in multiple inputs`
           );
         }
-        merged.set(documentId, content);
+        mergedContent.set(documentId, content);
+      }
+      for (const [documentId, p] of pathMap) {
+        // Path map collisions follow the same documentId — already
+        // guarded by the content-map check above, but keep the
+        // map symmetric.
+        mergedPaths.set(documentId, p);
       }
     }
 
     const existingCollisions = [];
-    for (const documentId of merged.keys()) {
+    for (const documentId of mergedContent.keys()) {
       if (this.#map.has(documentId)) existingCollisions.push(documentId);
     }
     if (existingCollisions.length > 0) {
@@ -453,10 +547,74 @@ class SectionResolver {
     }
 
     // Safe to merge.
-    for (const [documentId, content] of merged) {
+    for (const [documentId, content] of mergedContent) {
       this.#map.set(documentId, content);
     }
-    return merged.size;
+    for (const [documentId, p] of mergedPaths) {
+      this.#paths.set(documentId, p);
+    }
+    return mergedContent.size;
+  }
+
+  /**
+   * Remove one or more documents from the index by documentId, in
+   * place. Variadic — same shape as {@link SectionResolver#add}:
+   *
+   *   resolver.remove("theme|stem");
+   *   resolver.remove("theme|a", "theme|b");
+   *   resolver.remove(["theme|a", "theme|b"]);
+   *   resolver.remove([["theme|a"], ["theme|b", "theme|c"]]);
+   *
+   * Unknown documentIds are warned about but do NOT throw — matches
+   * Unix `rm` semantics. The return value tells the caller how many
+   * entries were actually removed.
+   *
+   * Synchronous — pure in-memory map mutation, no I/O.
+   *
+   * @param {...(string|string[])} documentIds
+   * @returns {number} Count of entries actually removed.
+   *
+   * @example
+   *   const removed = resolver.remove("biocides|old_doc");
+   *   // → 1 if it was present, 0 if not
+   */
+  remove(...documentIds) {
+    documentIds = documentIds.flat(Infinity);
+    if (documentIds.length === 0) return 0;
+ 
+    // Validate first so a bad arg doesn't half-remove.
+    for (const id of documentIds) {
+      if (typeof id !== "string" || id.length === 0) {
+        throw new Error(`SectionResolver.remove: each documentId must be a non-empty string, got ${typeof id}`);
+      }
+    }
+ 
+    // Map the input to correct documentIds, if needed.
+    let removed = 0, j = 0;
+    const unknown = new Set;
+    for (let i = 0, l = documentIds.length, originalInput, documentId; i !==l; ++i) {
+      try {
+        documentId = deriveDocumentId(originalInput = documentIds[i]);
+        documentIds[j++] = [documentId, originalInput];
+      } catch {
+        unknown.add(originalInput);
+      }
+    }
+    documentIds.length = j;
+
+
+    (new Map(documentIds)).forEach((originalInput, documentId) => (
+        this.#map.has(documentId) && (
+        this.#map.delete(documentId),
+        this.#paths.delete(documentId),  // safe to call even if entry never had a path
+        ++removed
+      ) || unknown.add(originalInput)
+    ));
+ 
+    // Warn once per distinct missing id.
+    unknown.forEach(id => console.warn(`SectionResolver.remove: document "${id}" not in index`));
+ 
+    return removed;
   }
 
   /**

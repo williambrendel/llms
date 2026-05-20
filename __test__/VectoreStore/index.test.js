@@ -12,6 +12,8 @@
  *   - score(): composes Document.score across documents.
  *   - search(): delegates to the external search function.
  *   - load() / create(): file and directory I/O via tmpdir.
+ *   - add(): variadic in-place ingestion.
+ *   - remove(): variadic in-place deletion by documentId or path.
  *   - Document.score / VectorStore.score as static forms.
  *
  * The pipeline behaviors (prune, rerank, safety rails) are covered in
@@ -80,9 +82,6 @@ describe("VectorStore — Array inheritance", () => {
   });
 
   test("Symbol.species falls back to plain Array", () => {
-    // store.map(...) should produce an Array, not a VectorStore — the
-    // mapped values often aren't Documents, and treating them as a
-    // VectorStore would be wrong.
     const store = new VectorStore();
     store.push(makeDoc("a", [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]));
     store.push(makeDoc("b", [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]));
@@ -162,17 +161,15 @@ describe("VectorStore — score", () => {
     store.push(doc2);
 
     const hits = store.score(v(1, 0, 0, 0));
-    // 3 sections, all passing the default ABSOLUTE_FLOOR.
     expect(hits.length).toBe(3);
   });
 
   test("returns hits in document order (NOT sorted)", () => {
-    // score() is the raw composition; sorting is search()'s job.
     const doc1 = makeDoc("doc|one", [
-      { range: [0, 10], vectors: [v(0.5, 0.5, 0.5, 0.5)] }, // score 0.5
+      { range: [0, 10], vectors: [v(0.5, 0.5, 0.5, 0.5)] },
     ]);
     const doc2 = makeDoc("doc|two", [
-      { range: [0, 10], vectors: [v(1, 0, 0, 0)] },          // score 1.0
+      { range: [0, 10], vectors: [v(1, 0, 0, 0)] },
     ]);
 
     const store = new VectorStore();
@@ -180,8 +177,6 @@ describe("VectorStore — score", () => {
     store.push(doc2);
 
     const hits = store.score(v(1, 0, 0, 0));
-    // doc1 comes first in the store, so its hit comes first — even
-    // though its score is lower.
     expect(hits[0].documentId).toBe("doc|one");
     expect(hits[1].documentId).toBe("doc|two");
   });
@@ -220,7 +215,6 @@ describe("VectorStore — search", () => {
     const hits = store.search(v(1, 0, 0, 0));
     expect(Array.isArray(hits)).toBe(true);
 
-    // Pipeline strips bestVec.
     for (const h of hits) expect(h.bestVec).toBeUndefined();
   });
 
@@ -297,25 +291,6 @@ describe("VectorStore — load and create", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Module export conventions
-// ─────────────────────────────────────────────────────────────────────────────
-
-describe("VectorStore — module export conventions", () => {
-  test("the export is the class itself", () => {
-    expect(typeof VectorStore).toBe("function");
-    expect(VectorStore.prototype.constructor).toBe(VectorStore);
-  });
-
-  test("exposes a self-referential .VectorStore property", () => {
-    expect(VectorStore.VectorStore).toBe(VectorStore);
-  });
-
-  test("the exported class is frozen", () => {
-    expect(Object.isFrozen(VectorStore)).toBe(true);
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
 // add() — variadic in-place append
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -350,7 +325,7 @@ describe("VectorStore — add (single input modes)", () => {
     await writeFixture(b, "preserve|b");
 
     const store = new VectorStore();
-    await store.load(a);                  // initial load (clear: true)
+    await store.load(a);
     expect(store.length).toBe(1);
 
     await store.add(b);
@@ -458,7 +433,7 @@ describe("VectorStore — add (input validation)", () => {
 
     const store = new VectorStore();
     await expect(store.add(a, 42)).rejects.toThrow(/must be a non-empty string/);
-    expect(store.length).toBe(0);   // valid path did not land
+    expect(store.length).toBe(0);
   });
 });
 
@@ -482,7 +457,6 @@ describe("VectorStore — add (partial failure)", () => {
     expect(err.errors.length).toBeGreaterThanOrEqual(1);
     expect(err.errors.some(e => e.message.includes("add-agg-missing"))).toBe(true);
 
-    // The valid path DID land (VectorStore.load has per-path atomicity).
     expect(store.length).toBe(1);
     expect(store[0].documentId).toBe("agg|ok");
   });
@@ -503,5 +477,281 @@ describe("VectorStore — add (partial failure)", () => {
     expect(err).toBeInstanceOf(AggregateError);
     expect(err.errors.length).toBe(2);
     expect(store.length).toBe(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// remove() — variadic in-place deletion by documentId or path
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("VectorStore — remove (single input modes)", () => {
+  test("removes a single documentId", () => {
+    const store = new VectorStore();
+    store.push(makeDoc("a|x", [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]));
+    store.push(makeDoc("b|y", [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]));
+    store.push(makeDoc("c|z", [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]));
+
+    const removed = store.remove("b|y");
+    expect(removed).toBe(1);
+    expect(store.length).toBe(2);
+    expect(store.map(d => d.documentId)).toEqual(["a|x", "c|z"]);
+  });
+
+  test("removes multiple documentIds as separate args", () => {
+    const store = new VectorStore();
+    for (const id of ["a|x", "b|y", "c|z", "d|w"]) {
+      store.push(makeDoc(id, [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]));
+    }
+
+    expect(store.remove("a|x", "c|z")).toBe(2);
+    expect(store.map(d => d.documentId)).toEqual(["b|y", "d|w"]);
+  });
+
+  test("accepts an array of documentIds", () => {
+    const store = new VectorStore();
+    for (const id of ["a|x", "b|y", "c|z"]) {
+      store.push(makeDoc(id, [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]));
+    }
+
+    expect(store.remove(["a|x", "b|y"])).toBe(2);
+    expect(store.map(d => d.documentId)).toEqual(["c|z"]);
+  });
+
+  test("flat(Infinity) unrolls nested arrays", () => {
+    const store = new VectorStore();
+    for (const id of ["a|x", "b|y", "c|z", "d|w"]) {
+      store.push(makeDoc(id, [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]));
+    }
+
+    expect(store.remove([["a|x"], ["b|y", "c|z"]])).toBe(3);
+    expect(store.map(d => d.documentId)).toEqual(["d|w"]);
+  });
+
+  test("empty input returns 0 with no warnings", () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const store = new VectorStore();
+      store.push(makeDoc("a|x", [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]));
+
+      expect(store.remove()).toBe(0);
+      expect(store.remove([])).toBe(0);
+      expect(store.length).toBe(1);
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});
+
+describe("VectorStore — remove (path inputs are normalized)", () => {
+  // Inputs route through deriveDocumentId, so paths AND already-formed
+  // ids both work. This is the documented contract.
+
+  test("accepts a file path (derives to documentId)", () => {
+    const store = new VectorStore();
+    store.push(makeDoc("biology|overview", [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]));
+
+    const removed = store.remove("biology/overview.md");
+    expect(removed).toBe(1);
+    expect(store.length).toBe(0);
+  });
+
+  test("accepts a full filesystem path", () => {
+    const store = new VectorStore();
+    store.push(makeDoc("biology|overview", [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]));
+
+    const removed = store.remove("/abs/path/to/biology/overview.md");
+    expect(removed).toBe(1);
+  });
+
+  test("accepts a path with timestamp suffix", () => {
+    const store = new VectorStore();
+    store.push(makeDoc("biology|overview", [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]));
+
+    const removed = store.remove("biology/overview|md_2026-04-22T02-28-30-099Z.md");
+    expect(removed).toBe(1);
+  });
+
+  test("mixing path and id inputs in one call dedups by derived id", () => {
+    // Both inputs derive to "biology|overview" — the Map collapses
+    // them into one target, the store has one matching document,
+    // removes once.
+    const store = new VectorStore();
+    store.push(makeDoc("biology|overview", [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]));
+
+    const removed = store.remove("biology|overview", "biology/overview.md");
+    expect(removed).toBe(1);
+  });
+});
+
+describe("VectorStore — remove (unknown documentIds)", () => {
+  let warnSpy;
+  beforeEach(() => { warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {}); });
+  afterEach(()  => { warnSpy.mockRestore(); });
+
+  test("warn-and-continue on unknown id", () => {
+    const store = new VectorStore();
+    store.push(makeDoc("a|x", [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]));
+    store.push(makeDoc("b|y", [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]));
+
+    const removed = store.remove("a|x", "missing|doc");
+    expect(removed).toBe(1);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(`"missing|doc"`));
+  });
+
+  test("warning uses the ORIGINAL input string, not the derived id", () => {
+    // A user-typed path should appear verbatim in the warning,
+    // not as the derived "theme|stem" form.
+    const store = new VectorStore();
+
+    store.remove("missing/path.md");
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(`"missing/path.md"`));
+  });
+
+  test("removing only unknown ids returns 0, store untouched", () => {
+    const store = new VectorStore();
+    store.push(makeDoc("a|x", [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]));
+
+    expect(store.remove("x|missing", "y|missing")).toBe(0);
+    expect(store.length).toBe(1);
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+  });
+
+  test("removing the same id twice in one call removes once, no warning", () => {
+    // The targets Map deduplicates by derived id.
+    const store = new VectorStore();
+    store.push(makeDoc("a|x", [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]));
+
+    const removed = store.remove("a|x", "a|x");
+    expect(removed).toBe(1);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  test("duplicate unknown id warns once", () => {
+    const store = new VectorStore();
+    store.push(makeDoc("a|x", [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]));
+
+    store.remove("missing|x", "missing|x");
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("VectorStore — remove (garbage inputs don't throw)", () => {
+  let warnSpy;
+  beforeEach(() => { warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {}); });
+  afterEach(()  => { warnSpy.mockRestore(); });
+
+  test("derive-throwing input is treated as unknown, not fatal", () => {
+    // "!!!" sanitizes to empty stem → deriveDocumentId throws.
+    // remove() catches and adds it to the unknown set, warns.
+    const store = new VectorStore();
+    store.push(makeDoc("a|x", [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]));
+
+    expect(() => store.remove("!!!", "a|x")).not.toThrow();
+    // The valid "a|x" still got removed.
+    expect(store.length).toBe(0);
+    // The garbage input warned.
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(`"!!!"`));
+  });
+
+  test("multiple derive-throwing inputs all warn, none fatal", () => {
+    const store = new VectorStore();
+
+    expect(() => store.remove("!!!", "???", "***")).not.toThrow();
+    expect(warnSpy).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("VectorStore — remove (validation)", () => {
+  test("throws on non-string id", () => {
+    const store = new VectorStore();
+    store.push(makeDoc("a|x", [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]));
+
+    expect(() => store.remove(42)).toThrow(/must be a non-empty string/);
+    expect(store.length).toBe(1);
+  });
+
+  test("throws on empty string id", () => {
+    const store = new VectorStore();
+    store.push(makeDoc("a|x", [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]));
+
+    expect(() => store.remove("")).toThrow(/must be a non-empty string/);
+  });
+
+  test("validates ALL ids before mutating (no partial removal)", () => {
+    const store = new VectorStore();
+    store.push(makeDoc("a|x", [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]));
+    store.push(makeDoc("b|y", [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]));
+
+    expect(() => store.remove("a|x", 42)).toThrow(/must be a non-empty string/);
+    expect(store.length).toBe(2);
+  });
+});
+
+describe("VectorStore — remove (integrity)", () => {
+  test("removing from large store preserves order of survivors", () => {
+    const store = new VectorStore();
+    for (const id of ["a|x", "b|x", "c|x", "d|x", "e|x", "f|x"]) {
+      store.push(makeDoc(id, [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]));
+    }
+
+    store.remove("b|x", "d|x", "f|x");
+    expect(store.map(d => d.documentId)).toEqual(["a|x", "c|x", "e|x"]);
+  });
+
+  test("removing all documents leaves empty store", () => {
+    const store = new VectorStore();
+    for (const id of ["a|x", "b|x", "c|x"]) {
+      store.push(makeDoc(id, [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]));
+    }
+
+    expect(store.remove("a|x", "b|x", "c|x")).toBe(3);
+    expect(store.length).toBe(0);
+  });
+
+  test("remove returns 0 on empty store", () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const store = new VectorStore();
+      expect(store.remove("missing|x")).toBe(0);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("subsequent search reflects removal", () => {
+    const doc1 = makeDoc("keep|x", [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]);
+    const doc2 = makeDoc("drop|x", [{ range: [0, 10], vectors: [v(1, 0, 0, 0)] }]);
+    const store = new VectorStore();
+    store.push(doc1);
+    store.push(doc2);
+
+    store.remove("drop|x");
+
+    const hits = store.score(v(1, 0, 0, 0));
+    expect(hits.every(h => h.documentId === "keep|x")).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module export conventions
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("VectorStore — module export conventions", () => {
+  test("the export is the class itself", () => {
+    expect(typeof VectorStore).toBe("function");
+    expect(VectorStore.prototype.constructor).toBe(VectorStore);
+  });
+
+  test("exposes a self-referential .VectorStore property", () => {
+    expect(VectorStore.VectorStore).toBe(VectorStore);
+  });
+
+  test("the exported class is frozen", () => {
+    expect(Object.isFrozen(VectorStore)).toBe(true);
+  });
+
+  test("remove method exists on prototype", () => {
+    expect(typeof VectorStore.prototype.remove).toBe("function");
   });
 });
