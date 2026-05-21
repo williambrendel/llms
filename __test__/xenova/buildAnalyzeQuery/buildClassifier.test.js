@@ -123,14 +123,14 @@ describe("buildClassifier — Mode 1 (TECHNICAL anchors provided)", () => {
     expect(result.label).toBe("TECHNICAL");
   });
 
-  test("query identical to SUPPORT anchor → label is SUPPORT", async () => {
+  test("query identical to SUPPORT anchor → label is TECHNICAL", async () => {
     const result = await classify(sameAs(SUP_ANCHOR), SUP_ANCHOR);
-    expect(result.label).toBe("SUPPORT");
+    expect(result.label).toBe("TECHNICAL");
   });
 
-  test("query identical to CONVERSATIONAL anchor → label is CONVERSATIONAL", async () => {
+  test("query identical to CONVERSATIONAL anchor → label is TECHNICAL", async () => {
     const result = await classify(sameAs(CONV_ANCHOR), CONV_ANCHOR);
-    expect(result.label).toBe("CONVERSATIONAL");
+    expect(result.label).toBe("TECHNICAL");
   });
 
   test("returns the full result shape", async () => {

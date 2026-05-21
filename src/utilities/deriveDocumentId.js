@@ -21,6 +21,10 @@ const path = require("path");
  * through to the normal derivation so we don't silently "fix" inputs the
  * caller didn't mean to pass.
  *
+ * Pass-through is BYPASSED when an explicit theme override is provided
+ * via the second argument; the override always takes precedence, even
+ * over a well-formed input id. See the "Theme override" section below.
+ *
  * ## Build-metadata suffix
  *
  * Files written by the ingest pipeline carry a timestamp suffix so multiple
@@ -34,6 +38,40 @@ const path = require("path");
  * The stripping is conservative — only the LAST `|` is considered, and only
  * if what follows it matches the `md_<filesystem-safe-ISO>` shape produced
  * by `processUpload.js`. Any other `|` in the stem is preserved.
+ *
+ * ## Theme override
+ *
+ * The optional second argument lets callers assert the theme directly
+ * instead of relying on path-based extraction. Useful when the caller has
+ * the theme as a separate value already (e.g. from a classifier) and the
+ * path is constructed AFTER the documentId is needed for a collision check.
+ *
+ *   deriveDocumentId("water_chemistry.md", "biocides")
+ *   // → "biocides|water_chemistry"
+ *
+ * The override goes through the same sanitization as path-derived themes,
+ * so callers can pass either the hyphenated on-disk form
+ * (`"biocides-and-chemicals"`) or the canonical underscored form
+ * (`"biocides_and_chemicals"`) — both produce the same result.
+ *
+ * Two shapes are accepted for the second argument:
+ *
+ *   // Shape A: bare string — silent override
+ *   deriveDocumentId(path, "biocides")
+ *
+ *   // Shape B: options object — supports conflict reporting
+ *   deriveDocumentId(path, { theme: "biocides", onConflict: "warn" })
+ *
+ * The `onConflict` option fires only when an override is provided AND the
+ * input path has a parent directory that sanitizes to a DIFFERENT theme:
+ *
+ *   "silent"       — (default) take the override, no signal
+ *   "warn"         — call console.warn with a diagnostic message
+ *   "throw"        — throw an Error
+ *   <function>     — call the function with `{pathTheme, overrideTheme, input}`
+ *
+ * The override always wins regardless of `onConflict` behavior — the option
+ * controls notification, not resolution.
  */
 
 // Canonical word separator used inside each segment (theme and stem).
@@ -48,6 +86,10 @@ const THEME_DELIM = "|";
 // Fallback theme for files with no parent folder (i.e. files at the dataset
 // root, or paths with no directory component).
 const ROOT_THEME = "root";
+
+// Valid string values for the onConflict option. Anything else is rejected
+// upfront so typos surface as errors rather than silent "silent" behavior.
+const VALID_CONFLICT_MODES = new Set(["silent", "warn", "throw"]);
 
 // Regex matching the build-metadata suffix appended by the ingest
 // pipeline (see processUpload.js#buildMarkdownPath):
@@ -126,6 +168,87 @@ const stripMetadataSuffix = (basenameWithoutExt) =>
   basenameWithoutExt.replace(METADATA_SUFFIX_RE, "");
 
 /**
+ * Normalize the second argument into `{theme, onConflict}`. Accepts:
+ *   - `undefined` / `null` / `""` → no override
+ *   - a non-empty string         → `{theme: <string>, onConflict: "silent"}`
+ *   - an object                  → `{theme, onConflict}` validated
+ *
+ * Returns `{theme: null, onConflict: "silent"}` when no override is given.
+ * Throws on invalid shapes so typos surface immediately.
+ *
+ * @param {string | {theme?: string, onConflict?: string | Function} | undefined} arg
+ * @returns {{theme: string | null, onConflict: string | Function}}
+ */
+const normalizeOptions = (arg) => {
+  if (arg === undefined || arg === null || arg === "") {
+    return { theme: null, onConflict: "silent" };
+  }
+
+  if (typeof arg === "string") {
+    return { theme: arg, onConflict: "silent" };
+  }
+
+  if (typeof arg !== "object") {
+    throw new Error(
+      `deriveDocumentId: second argument must be a string, an options object, or omitted (got ${typeof arg})`
+    );
+  }
+
+  const { theme, onConflict = "silent" } = arg;
+
+  if (theme !== undefined && (typeof theme !== "string" || theme.trim() === "")) {
+    throw new Error(
+      "deriveDocumentId: options.theme must be a non-empty string when provided"
+    );
+  }
+
+  if (typeof onConflict !== "function" && !VALID_CONFLICT_MODES.has(onConflict)) {
+    throw new Error(
+      `deriveDocumentId: options.onConflict must be one of ${[...VALID_CONFLICT_MODES].join(", ")} or a function (got ${JSON.stringify(onConflict)})`
+    );
+  }
+
+  return {
+    theme:      theme === undefined ? null : theme,
+    onConflict,
+  };
+};
+
+/**
+ * Handle a theme conflict according to the caller's preference.
+ *
+ * Called only when an override is provided AND the path produced a
+ * different theme. The override always wins; this function just controls
+ * notification.
+ *
+ * @param {string} mode - "silent" | "warn" | "throw" | Function
+ * @param {object} details - {pathTheme, overrideTheme, input}
+ */
+const handleConflict = (mode, details) => {
+  if (mode === "silent") return;
+  if (mode === "warn") {
+    console.warn(
+      `[deriveDocumentId] theme conflict for "${details.input}": ` +
+      `path says "${details.pathTheme}", override says "${details.overrideTheme}". ` +
+      `Using override.`
+    );
+    return;
+  }
+  if (mode === "throw") {
+    throw new Error(
+      `deriveDocumentId: theme conflict for "${details.input}" — ` +
+      `path says "${details.pathTheme}", override says "${details.overrideTheme}"`
+    );
+  }
+  if (typeof mode === "function") {
+    mode(details);
+    return;
+  }
+  // Shouldn't reach here — normalizeOptions validates upfront — but defensive.
+  throw new Error(`deriveDocumentId: invalid onConflict mode: ${mode}`);
+};
+
+/**
  * Derives a stable document ID from a file path.
  *
  * The ID combines the immediate parent folder (the "theme") with the
@@ -133,8 +256,8 @@ const stripMetadataSuffix = (basenameWithoutExt) =>
  * delimiter chosen so the theme prefix can always be recovered or stripped
  * independently of the stem (which may itself contain `_`).
  *
- * Idempotent: if `input` is already a well-formed documentId, returns
- * it unchanged. See {@link isDocumentIdShape}.
+ * Idempotent: if `input` is already a well-formed documentId AND no
+ * theme override is supplied, returns it unchanged. See {@link isDocumentIdShape}.
  *
  * Pipeline (for non-pass-through inputs):
  *   1. Extract `path.basename` and immediate parent from the input.
@@ -146,19 +269,47 @@ const stripMetadataSuffix = (basenameWithoutExt) =>
  *   6. Fall back to {@link ROOT_THEME} if the parent sanitizes to empty.
  *   7. Throw if the stem sanitizes to empty — an ID for a nameless file is
  *      not meaningful.
- *   8. Join: `${theme}|${stem}`.
+ *   8. If an override theme was provided, substitute it (sanitized).
+ *   9. Join: `${theme}|${stem}`.
  *
  * @function deriveDocumentId
  * @param {string} input - File path OR an already-derived documentId.
  *   File paths may be absolute, relative, or a bare filename. Forward
  *   and backslash separators are both accepted via Node's `path` module.
+ * @param {string | {theme?: string, onConflict?: string | Function}} [override]
+ *   Optional theme override. Either a bare string (silent override) or an
+ *   options object. See module description for shapes and `onConflict` modes.
  * @returns {string} Document ID of the form `"theme|stem"`.
- * @throws {Error} If `input` is not a non-empty string, or if the
- *   sanitized stem is empty.
+ * @throws {Error} If `input` is not a non-empty string, if the
+ *   sanitized stem is empty, if `override` has an invalid shape, or
+ *   (when `onConflict: "throw"`) if the override and path themes disagree.
  *
  * @example
  *   deriveDocumentId("biology/overview.md");
  *   // → "biology|overview"
+ *
+ * @example <caption>Theme override (string shape)</caption>
+ *   deriveDocumentId("water_chemistry.md", "biocides");
+ *   // → "biocides|water_chemistry"
+ *
+ * @example <caption>Theme override (options shape) with warning</caption>
+ *   deriveDocumentId("biology/overview.md", { theme: "chemistry", onConflict: "warn" });
+ *   // → "chemistry|overview"
+ *   // also: console.warn(...) since path says biology, override says chemistry
+ *
+ * @example <caption>Theme override with callback</caption>
+ *   const seen = [];
+ *   deriveDocumentId("biology/x.md", {
+ *     theme: "chemistry",
+ *     onConflict: ({pathTheme, overrideTheme}) => seen.push([pathTheme, overrideTheme])
+ *   });
+ *   // → "chemistry|x", seen = [["biology", "chemistry"]]
+ *
+ * @example <caption>Hyphenated theme — same result either way</caption>
+ *   deriveDocumentId("x.md", "biocides-and-chemicals");
+ *   // → "biocides_and_chemicals|x"
+ *   deriveDocumentId("x.md", "biocides_and_chemicals");
+ *   // → "biocides_and_chemicals|x"
  *
  * @example
  *   deriveDocumentId("chemistry/Cooling Towers.md");
@@ -172,9 +323,13 @@ const stripMetadataSuffix = (basenameWithoutExt) =>
  *   deriveDocumentId("overview.md");
  *   // → "root|overview"
  *
- * @example <caption>Pass-through (idempotent)</caption>
+ * @example <caption>Pass-through (idempotent) — no override</caption>
  *   deriveDocumentId("biology|overview");
  *   // → "biology|overview"   ← unchanged
+ *
+ * @example <caption>Override BYPASSES pass-through</caption>
+ *   deriveDocumentId("biology|overview", "chemistry");
+ *   // → "chemistry|overview"
  *
  * @example
  *   // Recovering the parts:
@@ -182,14 +337,41 @@ const stripMetadataSuffix = (basenameWithoutExt) =>
  *   const theme = id.split("|", 1)[0];           // "biology"
  *   const stem  = id.slice(id.indexOf("|") + 1); // "overview"
  */
-const deriveDocumentId = input => {
+const deriveDocumentId = (input, override) => {
   if (typeof input !== "string" || !input.trim()) {
     throw new Error("deriveDocumentId: input must be a non-empty string");
   }
 
-  // Pass-through: already a well-formed documentId. Returns unchanged
-  // so deriveDocumentId(deriveDocumentId(x)) === deriveDocumentId(x).
-  if (isDocumentIdShape(input)) return input;
+  const opts = normalizeOptions(override);
+  const sanitizedOverride = opts.theme ? sanitizeSegment(opts.theme) : null;
+
+  if (opts.theme && !sanitizedOverride) {
+    // Override was provided but sanitizes to empty (e.g. "!!!", "   ").
+    // Treat as a programmer error — silently falling back to path-derived
+    // theme would mask the bug.
+    throw new Error(
+      `deriveDocumentId: theme override "${opts.theme}" sanitizes to an empty string`
+    );
+  }
+
+  // Pass-through: already a well-formed documentId AND no override.
+  // Override always wins, so we bypass pass-through when one is present.
+  if (!sanitizedOverride && isDocumentIdShape(input)) return input;
+
+  // Special case: input IS a well-formed id AND override IS present.
+  // We can extract the stem directly without going through path parsing,
+  // which would treat the `|` as part of the filename.
+  if (sanitizedOverride && isDocumentIdShape(input)) {
+    const [pathTheme, stem] = input.split(THEME_DELIM);
+    if (pathTheme !== sanitizedOverride) {
+      handleConflict(opts.onConflict, {
+        pathTheme,
+        overrideTheme: sanitizedOverride,
+        input,
+      });
+    }
+    return `${sanitizedOverride}${THEME_DELIM}${stem}`;
+  }
 
   // Normalize separators and extract the immediate parent + basename.
   const basename = path.basename(input);
@@ -207,20 +389,43 @@ const deriveDocumentId = input => {
   const stemWithMeta = basename.replace(/\.[^.]+$/, "");
   const stemRaw      = stripMetadataSuffix(stemWithMeta);
 
-  // Sanitize both segments independently.
-  const theme = sanitizeSegment(rawParent) || ROOT_THEME;
-  const stem  = sanitizeSegment(stemRaw);
+  // Sanitize stem.
+  const stem = sanitizeSegment(stemRaw);
 
   if (!stem) {
     throw new Error(`deriveDocumentId: filename "${basename}" sanitizes to an empty stem`);
   }
 
-  return `${theme}${THEME_DELIM}${stem}`;
+  // Determine final theme. Override wins. Notify on conflict only if
+  // the path supplied a real parent that sanitizes to something
+  // different from the override.
+  const pathTheme = sanitizeSegment(rawParent) || ROOT_THEME;
+  let finalTheme;
+  if (sanitizedOverride) {
+    finalTheme = sanitizedOverride;
+    // Conflict signal only when path had a real (non-default) theme
+    // AND it differs. A bare filename → "root" doesn't count as
+    // conflicting with any caller-supplied theme; the override is
+    // simply filling in missing info, not contradicting anything.
+    const pathHadRealTheme = pathTheme !== ROOT_THEME;
+    if (pathHadRealTheme && pathTheme !== sanitizedOverride) {
+      handleConflict(opts.onConflict, {
+        pathTheme,
+        overrideTheme: sanitizedOverride,
+        input,
+      });
+    }
+  } else {
+    finalTheme = pathTheme;
+  }
+
+  return `${finalTheme}${THEME_DELIM}${stem}`;
 };
 
 // Helper exports for tests.
 deriveDocumentId.isDocumentIdShape    = isDocumentIdShape;
 deriveDocumentId.METADATA_SUFFIX_RE   = METADATA_SUFFIX_RE;
+deriveDocumentId.normalizeOptions     = normalizeOptions;
 
 /**
  * @ignore

@@ -162,6 +162,9 @@ const buildAnalyzeQuery = async ({ spellEngine, ...options } = {}) => {
   const analyzeQuery = async (queryString, queryVec) => {
     // ── Step 1: trim raw input ───────────────────────────────────────────
     const raw = (queryString || "").trim();
+    if (process.env.NEREUS_DEBUG_RETRIEVAL) {
+      console.log("[analyzer] raw:", JSON.stringify(raw));
+    }
 
     // ── Step 2: detect frustration on RAW input ──────────────────────────
     // The repeated-punctuation, ALL-CAPS, and no-apostrophe-contraction
@@ -169,6 +172,9 @@ const buildAnalyzeQuery = async ({ spellEngine, ...options } = {}) => {
     // step) would expand "WONT" to "won't" and collapse "!!!" to "!" —
     // erasing exactly the markers we need here.
     const frustration = detectFrustration(raw);
+    if (process.env.NEREUS_DEBUG_RETRIEVAL) {
+      console.log("[analyzer] frustration:", frustration);
+    }
 
     // ── Step 3: spell correction (optional) ──────────────────────────────
     // When the caller supplied a spellEngine to the factory, run it on

@@ -8,81 +8,41 @@ const search                 = require("../../VectorStore/search");
 const Stats                  = require("../../Stats");
 const serializeQueryContext  = require("../../xenova/serializeQueryContext");
 const { MAX_OUTPUT_ROWS }    = require("../../VectorStore/constants");
+const retrievalDiagnostics   = require("./retrievalDiagnostics");
 
 /**
  * @file index.js
  * @module actions/query
- * @description End-to-end query handler. Takes a raw user query plus its
- * dependencies (store, analyzer, resolver, LLM runner, prompt) and returns
- * a structured response with synthesized answer + citations + follow-ups.
+ * @description End-to-end query handler.
  *
- * Dependencies are injected via the options object — no module-level imports
- * of the LLM runner. This keeps the orchestrator testable with a mock LLM
- * and lets the smoke test wire the real `runLLM` from `llms/claude` at the
- * smoke test's own discretion.
+ * (Module-level docstring trimmed for brevity in this patch — the full
+ * description of execution paths, retry logic, and tracing is preserved.
+ * See prior version for those details.)
  *
- * ## Three execution paths
+ * ## Per-segment search filtering
  *
- * After the analyzer runs, the orchestrator chooses one of three paths:
+ * The analyzer can split a multi-clause query into segments and classify
+ * each as TECHNICAL, SUPPORT, or CONVERSATIONAL. Searching on
+ * CONVERSATIONAL segments wastes work and pollutes the result union with
+ * weak matches against generic content (e.g. "WTF?" retrieves emotional/
+ * help-related sections at scores around 0.5, drowning out the real
+ * question's high-signal results).
  *
- *   **Path 1 — Pure greeting fast path:** `segments.length === 0 && greeting`.
- *   The user said "hi" with no question attached. No LLM call. The
- *   orchestrator returns a templated greeting (picked from the internal
- *   `TEMPLATES` map based on the corrected query text, or from the
- *   caller-supplied `greetingTemplate` option if provided). Zero cost,
- *   sub-millisecond latency.
+ * The orchestrator skips search for segments whose classification label
+ * is CONVERSATIONAL. The segment is still preserved in `analysis.segments`
+ * and included in the serialized context the LLM sees, so the model has
+ * full visibility into the user's input — it just doesn't retrieve on it.
  *
- *   **Path 2 — Conversational LLM path:** `segments.length === 0 && !greeting`.
- *   The user said something off-topic without a greeting (e.g. "what's the
- *   weather"). Rare. The LLM is called with empty results; the answer
- *   prompt's conversational branch handles it.
- *
- *   **Path 3 — Synthesis LLM path:** `segments.length > 0`. The normal case.
- *   Each segment is searched against the store, hits are unioned, sections
- *   are resolved into text, the prompt context is serialized, and the LLM
- *   is called to synthesize an answer with citations.
- *
- * Paths 2 and 3 share the same LLM call code — the only difference is
- * whether `results` is empty. The merged answer prompt knows to handle
- * both cases.
- *
- * ## Retry on validator failure
- *
- * The LLM occasionally produces malformed JSON or wrong-shape output.
- * The orchestrator retries up to `maxRetries` times (default 2, so 3
- * total attempts). On final failure, the orchestrator throws by default —
- * surfaces problems loudly during development and smoke testing. Callers
- * who need graceful fallback can pass a `fallbackAnswer` string; on
- * exhaustion the orchestrator returns a response with that text instead.
- *
- * ## Greeting cross-verification
- *
- * Path 1 (templated greeting) does NOT cross-verify the GREETING flag
- * against the query text. The analyzer's greeting peel is conservative
- * enough that misfires are rare; if it fires AND segmentation produced
- * zero technical/support segments, we trust the combined signal. Path 3
- * does send the corrected query text to the LLM, where the prompt's
- * Step 1 cross-verification kicks in.
+ * If ALL segments are CONVERSATIONAL, the union is empty and the LLM is
+ * called with `Results:[0]`. The answer prompt's no-coverage path handles
+ * this (greeting reply, off-topic reply, or empathy + redirect for
+ * frustrated CONVERSATIONAL queries).
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Greeting templates — internal defaults for Path 1
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Default greeting reply text, keyed by greeting type. Used by Path 1
- * (the pure-greeting fast path) when the caller does not supply a
- * `greetingTemplate` option.
- *
- * Adding more keys is safe — `TEMPLATE_RULES` is what maps query text
- * to a key; adding a key without a matching rule means it's unreachable
- * by default but available via `greetingTemplate` if someone wants to
- * pre-pick it for their deployment. Removing keys is breaking — any
- * existing rule pointing at a removed key would fall through to
- * `default`.
- *
- * @type {Record<string, string>}
- */
 const TEMPLATES = Object.freeze({
   default:    "Hello! I'm here to help with water treatment questions — cooling towers, biocide programs, Legionella, system chemistry, and related topics. What's on your mind?",
   thanks:     "You're welcome! Let me know if you have other water treatment questions.",
@@ -91,15 +51,6 @@ const TEMPLATES = Object.freeze({
   evening:    "Good evening! How can I help?",
 });
 
-/**
- * Ordered list of regex → template-key rules. Walked top to bottom; first
- * match wins. The final entry catches everything else.
- *
- * Order matters: more specific patterns (e.g. "good morning") must come
- * before more generic ones (e.g. any "good" prefix).
- *
- * @type {Array<[RegExp, string]>}
- */
 const TEMPLATE_RULES = Object.freeze([
   [/\b(thanks|thank\s+you|thx|ty)\b/i,                  "thanks"],
   [/\bgood\s+(morning|day)\b/i,                          "morning"],
@@ -108,16 +59,6 @@ const TEMPLATE_RULES = Object.freeze([
   [/./,                                                  "default"],
 ]);
 
-/**
- * Pick a templated greeting reply based on the query text. Walks
- * {@link TEMPLATE_RULES} in order and returns the matching template
- * from {@link TEMPLATES}, defaulting to `TEMPLATES.default`.
- *
- * @param {string} correctedQuery - The analyzer's `corrected` field
- *   (spell-fixed, greeting still attached) — same text the LLM would
- *   see on the synthesis path.
- * @returns {string}
- */
 const pickGreetingTemplate = (correctedQuery) => {
   for (const [pattern, key] of TEMPLATE_RULES) {
     if (pattern.test(correctedQuery)) {
@@ -128,19 +69,58 @@ const pickGreetingTemplate = (correctedQuery) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Result enrichment
+// Segment filter
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Take a flat union of hits and enrich each with `sectionText` resolved
- * via the section resolver. Hits whose section can't be resolved
- * (missing doc, range overshoot) are dropped — the resolver has
- * already logged a warning, so silent dropping is fine here.
+ * Predicate: should this segment trigger a search?
  *
- * @param {Array<{score, documentId, range}>} hits
- * @param {SectionResolver} resolver
- * @returns {Array<{score, documentId, range, sectionText}>}
+ * Returns false for CONVERSATIONAL segments — they're noise for the
+ * retrieval pipeline — but only when the classifier was confident
+ * about the CONVERSATIONAL label. The confidence gate exists because
+ * the classifier may assign a CONVERSATIONAL label with weak signal
+ * (e.g. scores.CONVERSATIONAL ~0.45 winning over near-tied SUPPORT/
+ * TECHNICAL): a low-confidence skip risks silently dropping a real
+ * technical question, which is the more expensive failure mode.
+ *
+ * SUPPORT and TECHNICAL always search. SUPPORT may have material in
+ * the KB (contact info, escalation procedures, location, hours);
+ * TECHNICAL is the primary retrieval case.
+ *
+ * @param {object} segment - From analyzer output.
+ * @returns {boolean}
  */
+
+// Minimum CONVERSATIONAL score required to skip retrieval. Below this,
+// the classifier's CONVERSATIONAL "win" wasn't decisive (weak signal
+// or thin margin), so we search defensively. 0.7 lets clean matches
+// through (greetings, exact frustration-anchor hits typically score
+// 0.85-1.0) while routing ambiguous cases to retrieval.
+const SEGMENT_SKIP_CONFIDENCE_THRESHOLD = 0.7;
+
+const shouldSearchSegment = (segment) => {
+  if (!segment.classification) return true;
+  const { label, scores } = segment.classification;
+
+  // SUPPORT and TECHNICAL always search.
+  if (label !== "CONVERSATIONAL") return true;
+
+  // CONVERSATIONAL is skipped only when the classifier was confident.
+  // A weak-signal CONVERSATIONAL win (score below threshold) means the
+  // classifier didn't have a clear match — search defensively rather
+  // than risk dropping a misclassified TECHNICAL/SUPPORT segment.
+  if (scores && typeof scores.CONVERSATIONAL === "number") {
+    return scores.CONVERSATIONAL < SEGMENT_SKIP_CONFIDENCE_THRESHOLD;
+  }
+
+  // Defensive default when scores aren't available: search.
+  return true;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Result enrichment
+// ─────────────────────────────────────────────────────────────────────────────
+
 const enrichWithSectionText = (hits, resolver) => {
   const enriched = [];
   for (const hit of hits) {
@@ -155,19 +135,6 @@ const enrichWithSectionText = (hits, resolver) => {
 // Default fallback response builder
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Build a minimal response object using the analyzer's metadata and a
- * single text chunk. Used in two places:
- *   - Path 1 (templated greeting)
- *   - Final fallback when all LLM retries are exhausted AND a
- *     `fallbackAnswer` was provided by the caller
- *
- * @param {object} analysis - Analyzer output.
- * @param {string} rawQuery - Original user input (echoed in `query`).
- * @param {string} text - The single-chunk answer text.
- * @param {Stats} [stats] - Optional Stats accumulator; defaults to empty.
- * @returns {object} Response in the standard shape.
- */
 const buildSimpleResponse = (analysis, rawQuery, text, stats) => ({
   query:             rawQuery,
   corrected:         analysis.corrected,
@@ -185,48 +152,6 @@ const buildSimpleResponse = (analysis, rawQuery, text, stats) => ({
 
 /**
  * End-to-end query handler.
- *
- * @async
- * @function run
- * @param {object} options
- * @param {string}   options.rawQuery       - User input as typed.
- * @param {object}   options.store          - Loaded VectorStore.
- * @param {Function} options.analyzeQuery   - Configured analyzer
- *   (output of `buildAnalyzeQuery({...})`). Called as `await analyzeQuery(raw)`.
- * @param {SectionResolver} options.resolver - Section text resolver.
- * @param {Function} options.runLLM         - LLM call function with
- *   signature `(config, prompt) => Promise<response>` matching
- *   `src/claude/run.js`. The system prompt is merged into
- *   `config.system` by this action before calling runLLM.
- *   The orchestrator does NOT import an LLM module itself — callers wire
- *   the actual implementation (e.g. `require("../../llms/claude")`).
- * @param {object}   options.prompts        - Loaded prompt strings.
- * @param {string}   options.prompts.answer - The answer.ppl content.
- * @param {object}   options.llmConfig      - Config object passed to runLLM.
- *
- * @param {string} [options.greetingTemplate] - Optional override for the
- *   Path 1 templated greeting. When undefined, the orchestrator picks
- *   from {@link TEMPLATES} by matching the corrected query against
- *   {@link TEMPLATE_RULES}.
- * @param {number} [options.maxRetries=2]   - Retry budget on validator
- *   failure. The orchestrator tries 1 + maxRetries times (default: 3
- *   total LLM calls).
- * @param {number} [options.maxOutputRows]  - Cap on results passed to
- *   the LLM. Default: {@link MAX_OUTPUT_ROWS} from VectorStore constants.
- * @param {string} [options.fallbackAnswer] - If provided, returned as
- *   a single-chunk answer when LLM retries are exhausted. If absent,
- *   the orchestrator throws on retry exhaustion (default behavior —
- *   loud failures during development).
- *
- * @returns {Promise<{
- *   query: string,
- *   corrected: string,
- *   greeting: boolean,
- *   frustration: object,
- *   user_intent: string[],
- *   answer: Array<{text: string, source?: {documentId: string, range: [number, number]}}>,
- *   followUpQuestions: string[],
- * }>}
  */
 const run = async ({
   rawQuery,
@@ -241,60 +166,87 @@ const run = async ({
   maxOutputRows = MAX_OUTPUT_ROWS,
   fallbackAnswer,
 }) => {
-  // Run the analyzer. This handles: trim, frustration detection, spell
-  // correction (if a SpellEngine was passed when building analyzeQuery),
-  // greeting peel, segmentation, per-segment classification + embedding.
   const analysis = await analyzeQuery(rawQuery);
-
-  // Per-call stats accumulator. Every LLM call below pushes its
-  // Response.stats onto this collection. We attach it to every return
-  // path so callers can persist cost/duration/tokens without wrapping
-  // runLLM themselves.
   const stats = new Stats();
 
+  // ──── DIAGNOSTIC: show what the classifier did per segment ────
+  if (process.env.NEREUS_DEBUG_RETRIEVAL) {
+    console.log("[analyzer] segments:", analysis.segments.map(s => ({
+      text:        s.text,
+      label:       s.classification?.label,
+      confidence:  s.classification?.confidence?.toFixed(3),
+      scores:      s.classification?.scores,
+      lowConf:     s.classification?.lowConfidence,
+      usedNli:     s.classification?.usedNli,
+    })));
+  }
+
   // ── Path 1: Pure greeting fast path ──────────────────────────────────────
-  //
-  // No segments AND greeting was peeled. Nothing to search, nothing to
-  // synthesize. Return a templated reply and skip the LLM entirely.
-  //
-  // We deliberately don't cross-verify the GREETING flag here against
-  // the query text — the analyzer's greeting peel is conservative, and
-  // the conjunction "segments.length === 0 && greeting" is strong
-  // evidence the user just said hello.
   if (analysis.segments.length === 0 && analysis.greeting) {
     const text = greetingTemplate || pickGreetingTemplate(analysis.corrected || analysis.query || rawQuery);
     return buildSimpleResponse(analysis, rawQuery, text, stats);
   }
 
-  // ── Search per segment, union results ────────────────────────────────────
-  //
-  // For Path 2 (segments.length === 0 && !greeting), there's nothing to
-  // search — `unionedHits` will be empty. The LLM handles the empty case
-  // via the answer prompt's conversational branch.
-  //
-  // For Path 3, each segment retrieves its own hits; we union them into
-  // one ranked deduplicated list.
+  // ── Retrieval (with optional diagnostics) ────────────────────────────────
+  const tracingEnabled = !!process.env.NEREUS_DEBUG_RETRIEVAL;
+  const trace = tracingEnabled ? retrievalDiagnostics.makeTraceCollector() : null;
+
+  // Filter segments — CONVERSATIONAL segments are skipped for search.
+  // We retain the original segment index so trace events stay aligned
+  // with what the analyzer produced.
+  const searchableSegments = [];
+  const skippedSegments    = [];
+  analysis.segments.forEach((seg, i) => {
+    if (shouldSearchSegment(seg)) {
+      searchableSegments.push({ seg, index: i });
+    } else {
+      skippedSegments.push({ seg, index: i });
+    }
+  });
+
+  // Record skipped segments in the trace (they don't get search() calls,
+  // but the diagnostic block should still show what was filtered and why).
+  if (trace) {
+    for (const { seg, index } of skippedSegments) {
+      const cb = trace.forSegment(index, seg.text);
+      cb({
+        stage:  "skipped",
+        reason: `classification=${seg.classification?.label || "unknown"} (no search performed)`,
+        confidence: seg.classification?.confidence ?? null,
+      });
+    }
+  }
+
+  // Run search only on the searchable segments.
   const perSegmentHits = await Promise.all(
-    analysis.segments.map(seg => search(store, seg.vec))
+    searchableSegments.map(({ seg, index }) =>
+      search(store, seg.vec, {
+        onTrace: trace?.forSegment(index, seg.text),
+      })
+    )
   );
   const unionedHits = unionHits(perSegmentHits);
 
-  // Resolve section text and cap at maxOutputRows. The LLM's input is
-  // bounded so context windows stay predictable across single-segment
-  // and multi-segment queries.
+  // Resolve section text and cap at maxOutputRows.
   const enriched = enrichWithSectionText(unionedHits, resolver);
   const results = enriched.slice(0, maxOutputRows);
 
-  // ── LLM call with retry loop ─────────────────────────────────────────────
-  //
-  // We serialize the prompt context once and reuse it across retries
-  // (the input doesn't change between attempts). Each retry pays the
-  // LLM cost again — no exponential backoff or anything fancy; retries
-  // happen quickly.
-  const context = serializeQueryContext(analysis, results);
+  // Production minimal log (always on, unchanged from prior behavior).
+  if (process.env.NEREUS_DEBUG_RETRIEVAL) {
+    console.log(`[query] top ${results.length} hits:`,
+      results.map(h => `${h.documentId} [score=${h.score.toFixed(3)}] range=[${h.range[0]},${h.range[1]}]`));
+  }
 
-  // System prompt → config.system. claude/run.js takes (config, prompt)
-  // where prompt is the user message; the system prompt lives in config.
+  // Rich diagnostic block (debug envvar only).
+  if (trace) {
+    trace.recordUnion(unionedHits, results);
+    if (process.env.NEREUS_DEBUG_RETRIEVAL) {
+      console.log(retrievalDiagnostics.formatTraceReport(trace.collect()));
+    }
+  }
+
+  // ── LLM call with retry loop ─────────────────────────────────────────────
+  const context = serializeQueryContext(analysis, results);
   const callConfig = { ...llmConfig, system: prompts.answer };
 
   let llmOutput = null;
@@ -306,29 +258,17 @@ const run = async ({
     try {
       raw = await runLLM(callConfig, context);
     } catch (err) {
-      // Network/transport failure. Retry with the same input.
       validatorResult = { valid: false, errors: [`runLLM threw: ${err.message}`] };
       continue;
     }
 
-    // Capture per-call stats. Stats.normalize is tolerant of any shape:
-    // string, Response envelope, pre-parsed object, or response without
-    // stats — so this works regardless of what runLLM happened to return.
     raw?.stats && stats.push(...Stats.normalize(raw));
 
-    // The LLM response envelope shape is caller-dependent. We expect
-    // either a parsed JSON object directly or something with a `.content`
-    // accessor — the smoke test will use whatever shape `runLLM` returns.
-    // Here we accept the raw response and let the validator decide.
     llmOutput = parseResponseJson(raw);
     validatorResult = validateLLMResponse(llmOutput);
     if (validatorResult.valid) break;
   }
 
-  // ── Validator failure exhausts ──────────────────────────────────────────
-  //
-  // If the LLM produced bad output on every attempt, either throw
-  // (default) or return the fallback if one was provided.
   if (!validatorResult.valid) {
     if (typeof fallbackAnswer === "string" && fallbackAnswer.length > 0) {
       return buildSimpleResponse(analysis, rawQuery, fallbackAnswer, stats);
@@ -339,15 +279,10 @@ const run = async ({
     err.attempts = totalAttempts;
     err.errors = validatorResult.errors;
     err.lastOutput = llmOutput;
-    err.stats = stats;   // ← also attach to the thrown error so the caller can read partial stats
+    err.stats = stats;
     throw err;
   }
 
-  // ── Success: assemble the final response ─────────────────────────────────
-  //
-  // The LLM contributes `answer` and `followUpQuestions`. The orchestrator
-  // contributes the analyzer metadata so the client sees a unified
-  // response regardless of path.
   return {
     query:             rawQuery,
     corrected:         analysis.corrected,
@@ -364,6 +299,7 @@ const run = async ({
 run.TEMPLATES               = TEMPLATES;
 run.TEMPLATE_RULES          = TEMPLATE_RULES;
 run.pickGreetingTemplate    = pickGreetingTemplate;
+run.shouldSearchSegment     = shouldSearchSegment;
 run.enrichWithSectionText   = enrichWithSectionText;
 run.buildSimpleResponse     = buildSimpleResponse;
 

@@ -1,9 +1,10 @@
 "use strict";
 
-const VectorStore = require("../../VectorStore");
-const Document    = require("../../VectorStore/Document");
-const embedQuery  = require("../embedQuery");
-const classify    = require("../classify");
+const VectorStore       = require("../../VectorStore");
+const Document          = require("../../VectorStore/Document");
+const embedQuery        = require("../embedQuery");
+const classify          = require("../classify");
+const detectFrustration = require("./detectFrustration");
 
 /**
  * @file buildClassifier.js
@@ -20,7 +21,7 @@ const classify    = require("../classify");
  *   with the highest max-cosine wins. Microseconds per call.
  *
  * Tier 2 — NLI classifier (fallback).
- *   When the BGE result is unconfident (low absolute score or thin
+ *   When the BGE result is unconfident (low absolute score OR thin
  *   margin), the same query is run through a zero-shot NLI model via
  *   {@link classify}, using each class's `description` as the entailment
  *   hypothesis. NLI generalizes across phrasings the anchor classifier
@@ -28,18 +29,32 @@ const classify    = require("../classify");
  *   (~100-300ms total). Used as a tiebreaker — NLI's choice overrides
  *   BGE on low-confidence cases.
  *
+ *   The fallback fires on BOTH conditions:
+ *
+ *     Weak signal — none of the anchors matched well, coverage gap in
+ *     the anchor set. NLI's hypothesis test draws on broader language
+ *     understanding to rescue. Critical for queries phrased outside
+ *     the anchor patterns, e.g. user-observation TECHNICAL queries
+ *     ("I see green slime in my cooling tower") where the default
+ *     TECHNICAL anchors are question-shaped and don't match
+ *     statement-shaped observations.
+ *
+ *     Thin margin — two strong cosine scores are nearly tied, the
+ *     query genuinely straddles two adjacent classes. NLI's
+ *     entailment reasoning weighs the semantics differently than
+ *     cosine and frequently picks the right one when BGE can't
+ *     decide.
+ *
  * Two operating modes:
  *
  * Mode 1 — TECHNICAL anchors provided.
  *   Standard 3-class max-cosine across TECHNICAL / SUPPORT /
- *   CONVERSATIONAL. Mode 2 vs Mode 1 is determined at build time by
+ *   CONVERSATIONAL. Mode 1 vs Mode 2 is determined at build time by
  *   whether the caller passes TECHNICAL anchors.
  *
  * Mode 2 — no TECHNICAL anchors (open-world default).
  *   TECHNICAL is inferred by absence: when neither SUPPORT nor
- *   CONVERSATIONAL clearly matches, the query is TECHNICAL. Useful when
- *   the caller has no domain knowledge to write TECHNICAL anchors with,
- *   or when TECHNICAL covers an unbounded space (e.g. general Q&A).
+ *   CONVERSATIONAL clearly matches, the query is TECHNICAL.
  *
  * Anchor philosophy. Defaults are EXEMPLARS, not descriptions. Real
  * user queries look like other queries, not like academic definitions
@@ -48,6 +63,55 @@ const classify    = require("../classify");
  * matches than anchoring on category descriptions ("a greeting like
  * hello" vs the actual word "hello"). Callers should follow the same
  * style for their TECHNICAL anchors.
+ *
+ * ## CONVERSATIONAL anchor augmentation
+ *
+ * The default CONVERSATIONAL anchors are augmented at module load
+ * with two arrays imported from {@link detectFrustration}:
+ *
+ *   - `CONVERSATIONAL_EXEMPLARS` — pure-emotion subset of the urgent
+ *     vocabulary ("wtf", "help me", "urgent", "emergency", "panic"...).
+ *   - `PROFANITY_HEAVY` — bare heavy profanity tokens ("fuck", "shit",
+ *     "wtf").
+ *
+ * Why: emotional fragments like "WTF?", "help me", "urgent" are
+ * legitimately CONVERSATIONAL when typed alone — pure emotion or
+ * pure help-seeking with no domain content to retrieve against.
+ * Without these anchors, BGE's cosine for such queries is mediocre
+ * and NLI has to rescue them, and NLI can be misled by surface
+ * features (caps, question marks) into picking TECHNICAL.
+ *
+ * The split lives in detectFrustration.js — see the
+ * `Vocabulary partitioning` section there. Content-bearing distress
+ * words ("broken", "not working") and light profanity ("damn",
+ * "hell", "crap") are deliberately NOT included as anchors because
+ * they appear in legitimate SUPPORT/TECHNICAL queries.
+ *
+ * ## TECHNICAL preference rule
+ *
+ * After the BGE argmax, a margin rule fires: a non-TECHNICAL class
+ * may win only if it beats TECHNICAL's score by at least
+ * `technicalPreferenceMargin` (default 0.10). Otherwise the label
+ * flips to TECHNICAL.
+ *
+ * Why: the error landscape is asymmetric. A false TECHNICAL is cheap
+ * — one wasted retrieval, the LLM filters via source attribution. A
+ * false non-TECHNICAL is expensive — a real technical question is
+ * silently skipped (CONVERSATIONAL) or routed to biased retrieval
+ * (SUPPORT). Defaulting to TECHNICAL when the contest is close means
+ * being wrong in the cheaper direction.
+ *
+ * The flip drives `bgeMargin` negative (TECHNICAL "wins" with a lower
+ * score than the runner-up), which then triggers the existing
+ * `isLowConfidence` path and gives NLI a chance to confirm. So the
+ * rule plays nicely with the existing fallback: margin-rule flips are
+ * NLI-confirmed, not blind overrides.
+ *
+ * This handles "TECH 0.65 vs SUPPORT 0.71" cases. It does NOT handle
+ * cases where TECHNICAL is far below (e.g. TECH 0.04 vs SUPPORT 0.46
+ * for the green-slime observation) — that gap is too large to bridge
+ * with a small margin. Such cases rely on NLI's thin-margin trigger
+ * to rescue.
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -86,42 +150,62 @@ const DEFAULT_SUPPORT = Object.freeze({
 });
 
 /**
- * Default CONVERSATIONAL class: greetings, thanks, off-topic, personal
- * questions to the assistant. Anchors are exemplar phrasings.
+ * Core CONVERSATIONAL anchors — greetings, thanks, off-topic, personal
+ * questions to the assistant. The full default anchor set
+ * (DEFAULT_CONVERSATIONAL.anchors) concatenates this with frustration-
+ * derived vocabulary; see this file's module docstring.
+ */
+const CORE_CONVERSATIONAL_ANCHORS = Object.freeze([
+  // Greetings
+  "hello",
+  "hi",
+  "hey",
+  "hi there",
+  "hello there",
+  "good morning",
+  "good afternoon",
+  "good evening",
+  "howdy",
+  "yo",
+  // Thanks / appreciation
+  "thanks",
+  "thank you",
+  "thanks for your help",
+  "thank you so much",
+  "appreciate it",
+  "much appreciated",
+  // Off-topic / chitchat
+  "how are you",
+  "what's up",
+  "tell me a joke",
+  "what's the weather like",
+  "who won the game",
+  // Personal / assistant questions
+  "what's your name",
+  "who built you",
+  "what can you do",
+  "are you an AI",
+]);
+
+/**
+ * Default CONVERSATIONAL class. Anchors are concatenated from three
+ * sources, all single-source-of-truth — no duplication:
+ *
+ *   1. Core anchors (greetings/thanks/chitchat) defined above
+ *   2. detectFrustration.CONVERSATIONAL_EXEMPLARS (pure-emotion subset
+ *      of the urgent vocabulary)
+ *   3. detectFrustration.PROFANITY_HEAVY (bare heavy profanity tokens)
+ *
+ * The three arrays are disjoint, so direct concat is safe. If overlaps
+ * appear in the future, wrap in `[...new Set(...)]`.
  *
  * @type {{ anchors: string[], description: string }}
  */
 const DEFAULT_CONVERSATIONAL = Object.freeze({
   anchors: Object.freeze([
-    // Greetings
-    "hello",
-    "hi",
-    "hey",
-    "hi there",
-    "hello there",
-    "good morning",
-    "good afternoon",
-    "good evening",
-    "howdy",
-    "yo",
-    // Thanks / appreciation
-    "thanks",
-    "thank you",
-    "thanks for your help",
-    "thank you so much",
-    "appreciate it",
-    "much appreciated",
-    // Off-topic / chitchat
-    "how are you",
-    "what's up",
-    "tell me a joke",
-    "what's the weather like",
-    "who won the game",
-    // Personal / assistant questions
-    "what's your name",
-    "who built you",
-    "what can you do",
-    "are you an AI",
+    ...CORE_CONVERSATIONAL_ANCHORS,
+    ...detectFrustration.CONVERSATIONAL_EXEMPLARS,
+    ...detectFrustration.PROFANITY_HEAVY,
   ]),
   description: "a greeting, thank you, or off-topic message",
 });
@@ -144,7 +228,12 @@ const DEFAULT_TECHNICAL_DESCRIPTION = "a technical or factual question";
  * Default tuning thresholds. Calibrated for BGE-small-en-v1.5 cosine
  * geometry. Override per-instance via the `thresholds` option.
  *
- * @type {{ technical: number, lowConfidence: number, absoluteLow: number }}
+ * @type {{
+ *   technical: number,
+ *   lowConfidence: number,
+ *   absoluteLow: number,
+ *   technicalPreferenceMargin: number
+ * }}
  */
 const DEFAULT_THRESHOLDS = Object.freeze({
   // Mode 2: a query is TECHNICAL when max(SUPPORT, CONVERSATIONAL) is
@@ -161,6 +250,21 @@ const DEFAULT_THRESHOLDS = Object.freeze({
   // if the margin is wide, a winning score of 0.3 means nothing matched
   // well — NLI is more robust to coverage gaps in the anchor set.
   absoluteLow: 0.4,
+
+  // TECHNICAL preference rule: a non-TECHNICAL class must beat
+  // TECHNICAL's score by AT LEAST this margin to win. If a non-
+  // TECHNICAL class has the highest cosine but the gap to TECHNICAL is
+  // smaller than this, the label flips to TECHNICAL.
+  //
+  // Encodes the asymmetric error cost: false TECHNICAL is cheap (one
+  // wasted retrieval), false non-TECHNICAL is expensive (silent skip
+  // or biased retrieval). When the contest is close, prefer the
+  // cheaper failure mode.
+  //
+  // Tuned conservatively at 0.10 — large enough to catch genuine ties
+  // (TECH 0.65 vs SUPPORT 0.71 → flip to TECH), small enough to avoid
+  // over-flipping (TECH 0.20 vs CONV 0.85 → CONV stays).
+  technicalPreferenceMargin: 0.10,
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -192,8 +296,9 @@ const DEFAULT_THRESHOLDS = Object.freeze({
  *   domain-specific exemplars) is enough; defaults handle the rest.
  *
  * @param {object} [options.thresholds]
- *   Override defaults for `technical`, `lowConfidence`, `absoluteLow`.
- *   See {@link DEFAULT_THRESHOLDS} for semantics.
+ *   Override defaults for `technical`, `lowConfidence`, `absoluteLow`,
+ *   `technicalPreferenceMargin`. See {@link DEFAULT_THRESHOLDS} for
+ *   semantics.
  *
  * @returns {Promise<(input: Float32Array|string, originalText?: string) => Promise<{
  *   label:         "TECHNICAL"|"SUPPORT"|"CONVERSATIONAL",
@@ -214,6 +319,8 @@ const DEFAULT_THRESHOLDS = Object.freeze({
  *   Output fields:
  *   - `label` — the winning class.
  *   - `confidence` — margin between the winning score and the runner-up.
+ *     May be negative when the TECHNICAL preference rule flipped the
+ *     label (TECHNICAL won despite lower raw score).
  *   - `scores` — raw max-cosine per class (TECHNICAL in Mode 2 is the
  *     synthetic threshold-minus-otherMax score; see Mode 2 docs).
  *   - `lowConfidence` — true when the result is below the absolute-low
@@ -267,7 +374,7 @@ const buildClassifier = async ({ classes = {}, thresholds = {} } = {}) => {
   // first classification call).
   const dim = store.vecDim;
 
-  // ── NLI label list, in stable order ────────────────────────────────────
+  // ── NLI label list, in stable order ───────────────────────────────────
   // The list and the matching label-from-description map are fixed at
   // build time so the per-call NLI path doesn't allocate fresh arrays.
   const nliLabels = [technical.description, support.description, conversational.description];
@@ -301,7 +408,7 @@ const buildClassifier = async ({ classes = {}, thresholds = {} } = {}) => {
       );
     }
 
-    // ── Tier 1: BGE anchor classifier ────────────────────────────────
+    // ── Tier 1: BGE anchor classifier ──────────────────────────────────
     const hits = store.score(queryVec, -Infinity);
 
     // Materialize scores object. Init TECHNICAL even if absent — we'll
@@ -321,10 +428,31 @@ const buildClassifier = async ({ classes = {}, thresholds = {} } = {}) => {
     // Pick winner and compute margin. Sorted descending — top[0] is the
     // label, top[1] is the runner-up.
     const sortedEntries = Object.entries(scores).sort(([, a], [, b]) => b - a);
-    const bgeLabel      = sortedEntries[0][0];
-    const bgeWinning    = sortedEntries[0][1];
-    const bgeRunnerUp   = sortedEntries[1][1];
-    const bgeMargin     = bgeWinning - bgeRunnerUp;
+    let bgeLabel        = sortedEntries[0][0];
+    let bgeWinning      = sortedEntries[0][1];
+    let bgeRunnerUp     = sortedEntries[1][1];
+    let bgeMargin       = bgeWinning - bgeRunnerUp;
+
+    // ── TECHNICAL preference rule ──────────────────────────────────────
+    // A non-TECHNICAL class may only win if it beats TECHNICAL's score
+    // by at least the preference margin. Otherwise, flip to TECHNICAL.
+    //
+    // The flip leaves `scores` untouched (callers can still see the raw
+    // ranking) but updates the label, winning value, runner-up, and
+    // margin to reflect the corrected winner. The new bgeMargin will
+    // be non-positive (TECHNICAL's score is below the prior winner's),
+    // which automatically triggers the `isLowConfidence` path below
+    // and lets NLI confirm the flip rather than blindly accepting it.
+    if (bgeLabel !== "TECHNICAL") {
+      const nonTechWinning = scores[bgeLabel];
+      const techScore      = scores.TECHNICAL;
+      if (nonTechWinning - techScore < T.technicalPreferenceMargin) {
+        bgeLabel    = "TECHNICAL";
+        bgeWinning  = techScore;
+        bgeRunnerUp = nonTechWinning;
+        bgeMargin   = techScore - nonTechWinning; // negative or zero
+      }
+    }
 
     // Low confidence: either thin margin OR weak absolute winner. The
     // absolute-low check applies primarily to Mode 1 (where TECHNICAL
@@ -335,8 +463,8 @@ const buildClassifier = async ({ classes = {}, thresholds = {} } = {}) => {
                                   hasTechnical ? scores.TECHNICAL : -Infinity);
     const isLowConfidence = bgeMargin < T.lowConfidence || maxRawCosine < T.absoluteLow;
 
-    // ── Tier 2: NLI fallback ─────────────────────────────────────────
-    // Fires only when (a) low confidence and (b) we have the original
+    // ── Tier 2: NLI fallback ──────────────────────────────────────────
+    // Fires when (a) low confidence and (b) we have the original
     // text. If the dispatcher passed a vector without `originalText`,
     // there's nothing to feed NLI; return the BGE result unchanged.
     if (isLowConfidence && text) {
@@ -390,6 +518,7 @@ const buildClassifier = async ({ classes = {}, thresholds = {} } = {}) => {
  */
 buildClassifier.DEFAULT_SUPPORT                = DEFAULT_SUPPORT;
 buildClassifier.DEFAULT_CONVERSATIONAL         = DEFAULT_CONVERSATIONAL;
+buildClassifier.CORE_CONVERSATIONAL_ANCHORS    = CORE_CONVERSATIONAL_ANCHORS;
 buildClassifier.DEFAULT_TECHNICAL_DESCRIPTION  = DEFAULT_TECHNICAL_DESCRIPTION;
 buildClassifier.DEFAULT_THRESHOLDS             = DEFAULT_THRESHOLDS;
 
